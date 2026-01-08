@@ -46,20 +46,25 @@ class StorageService {
   Future<void> initialize() async {
     if (_isInitialized) return;
 
-    // Initialize Hive (local database)
-    await Hive.initFlutter();
+    try {
+      // Initialize Hive (local database)
+      await Hive.initFlutter();
 
-    // Open Hive boxes (like tables)
-    _readingsBoxInstance = await Hive.openBox<Map>(_readingsBox);
-    _riskScoresBoxInstance = await Hive.openBox<Map>(_riskScoresBox);
-    _alertsBoxInstance = await Hive.openBox<Map>(_alertsBox);
-    _userProfileBoxInstance = await Hive.openBox<Map>(_userProfileBox);
-    _dailySummaryBoxInstance = await Hive.openBox<Map>(_dailySummaryBox);
+      // Open Hive boxes (like tables)
+      _readingsBoxInstance = await Hive.openBox<Map>(_readingsBox);
+      _riskScoresBoxInstance = await Hive.openBox<Map>(_riskScoresBox);
+      _alertsBoxInstance = await Hive.openBox<Map>(_alertsBox);
+      _userProfileBoxInstance = await Hive.openBox<Map>(_userProfileBox);
+      _dailySummaryBoxInstance = await Hive.openBox<Map>(_dailySummaryBox);
 
-    // Initialize SharedPreferences (for simple key-value settings)
-    _prefs = await SharedPreferences.getInstance();
+      // Initialize SharedPreferences (for simple key-value settings)
+      _prefs = await SharedPreferences.getInstance();
 
-    _isInitialized = true;
+      _isInitialized = true;
+    } catch (e) {
+      print('StorageService initialization error: $e');
+      rethrow;
+    }
   }
 
   /// Check if storage is initialized
