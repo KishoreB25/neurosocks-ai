@@ -41,7 +41,7 @@ ML/
     └── logistic_regression_model.tflite # TFLite model for mobile
 ```
 
-## 🔬 Dataset
+##  Dataset
 
 **Source**: `../Synthetic_Data/synthetic_foot_ulcer_dataset_RISK.csv`
 
@@ -74,7 +74,7 @@ ML/
 #### Target:
 - `label`: 0 = Normal, 1 = High Risk
 
-## 📓 Notebooks
+##  Notebooks
 
 ### 1. `01_eda_visualization.ipynb`
 Comprehensive Exploratory Data Analysis:
@@ -172,7 +172,7 @@ def predict(input_data):
 3. **This is for risk classification, NOT medical diagnosis**
    - Results should support clinical decisions, not replace them
 
-## 🔧 Dependencies
+##  Dependencies
 
 ```
 pandas
