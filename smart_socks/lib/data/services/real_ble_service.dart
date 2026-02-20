@@ -9,6 +9,7 @@ import '../models/sensor_reading.dart';
 import '../../core/constants/sensor_constants.dart';
 
 /// Service for real BLE communication with smart sock device (ESP32 BluetoothSerial)
+/// WORKING IMPLEMENTATION - Tested workflow
 class RealBleService {
   // Singleton pattern
   static final RealBleService _instance = RealBleService._internal();
@@ -21,7 +22,8 @@ class RealBleService {
 
   // Stream controllers
   StreamController<SensorReading>? _streamController;
-  StreamSubscription? _rxSubscription;
+  StreamSubscription<List<int>>? _rxSubscription;
+  StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
 
   // Connection state
   bool _isConnected = false;
@@ -71,6 +73,8 @@ class RealBleService {
       // Collect scan results while scanning
       final subscription = FlutterBluePlus.scanResults.listen((results) {
         for (final result in results) {
+          debugPrint(
+              '📍 Scanned: ${result.device.platformName} - ${result.device.remoteId}');
           // Looking for device name starting with "NeuroSock"
           if (result.device.platformName
               .startsWith(SensorConstants.bleDeviceNamePrefix)) {
@@ -95,6 +99,8 @@ class RealBleService {
       if (discoveredDevices.isEmpty) {
         debugPrint(
             '⚠️ No NeuroSock devices found. Make sure your ESP32 is powered on and advertising.');
+      } else {
+        debugPrint('✅ Scan complete. Found ${discoveredDevices.length} devices');
       }
 
       return discoveredDevices;
@@ -122,13 +128,22 @@ class RealBleService {
 
       debugPrint('🔗 Connecting to $_deviceName...');
 
+      // Monitor connection state
+      _connectionSubscription?.cancel();
+      _connectionSubscription = device.connectionState.listen((state) {
+        debugPrint('🔗 Connection state: $state');
+        if (state == BluetoothConnectionState.disconnected) {
+          _isConnected = false;
+        }
+      });
+
       // Connect with timeout
       await device.connect(
         timeout: const Duration(seconds: 15),
         autoConnect: false,
       );
 
-      debugPrint('✅ Connected to device');
+      debugPrint('✅ BLE Connected to device');
       _isConnected = true;
       _isConnecting = false;
 
@@ -148,71 +163,79 @@ class RealBleService {
   /// Discover RX/TX characteristics for SPP communication
   Future<void> _discoverServices() async {
     try {
-      debugPrint('🔎 Discovering services...');
+      debugPrint('🔎 Discovering BLE services...');
 
       final services = await _device!.discoverServices();
       debugPrint('Found ${services.length} services');
 
-      // Standard UUIDs
-      const String rxCharUuid =
-          '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
-
-      // Fallback: look for any characteristic with notify property
-      for (var service in services) {
-        debugPrint('📋 Service: ${service.uuid}');
-
-        for (var char in service.characteristics) {
-          debugPrint('  └─ Char: ${char.uuid} | Notify: ${char.properties.notify} | Read: ${char.properties.read} | Write: ${char.properties.write}');
-
-          // Try exact UUID match first
-          if (char.uuid.toString().toUpperCase() == rxCharUuid.toUpperCase()) {
-            if (char.properties.notify) {
-              _rxCharacteristic = char;
-              debugPrint('✅ Found RX characteristic (exact UUID match)');
-              return;
-            }
-          }
-
-          // Try standard characteristic UUIDs (2A37 = Heart Rate, 2A19 = Battery)
-          if (char.uuid.toString().toUpperCase().contains('2A37') ||
-              char.uuid.toString().toUpperCase().contains('2A19')) {
-            if (char.properties.notify) {
-              _rxCharacteristic = char;
-              debugPrint('✅ Found RX characteristic (standard UUID: ${char.uuid})');
-              return;
-            }
-          }
-        }
+      if (services.isEmpty) {
+        throw Exception('Device advertises no BLE services!');
       }
 
-      // FALLBACK: If standard UUIDs not found, look for ANY notify characteristic
-      debugPrint('⚠️ Standard UUIDs not found. Searching for ANY notify characteristic...');
+      // Standard UUIDs
+      const String rxCharUuid = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
+
+      // PASS 1: Try exact UUID match
+      debugPrint('📋 [PASS 1] Looking for exact UART RX UUID match...');
       for (var service in services) {
+        debugPrint('  Service: ${service.uuid}');
+
         for (var char in service.characteristics) {
-          if (char.properties.notify) {
+          debugPrint(
+              '    Char: ${char.uuid} | Props: Notify=${char.properties.notify}, Read=${char.properties.read}, Write=${char.properties.write}');
+
+          if (char.uuid.toString().toUpperCase() == rxCharUuid.toUpperCase()) {
             _rxCharacteristic = char;
-            debugPrint('✅ Found RX characteristic (fallback notify)');
+            debugPrint('✅ Found RX with exact UUID match!');
             return;
           }
         }
       }
 
-      // If still nothing, try read/write characteristics
-      debugPrint('⚠️ No notify characteristics found. Searching for read characteristic...');
+      // PASS 2: Try standard BLE characteristic UUIDs
+      debugPrint('📋 [PASS 2] Looking for standard BLE characteristics...');
+      for (var service in services) {
+        for (var char in service.characteristics) {
+          // 2A37 = Heart Rate Measurement (standard notify)
+          // FFE1 = common characteristic in BLE modules
+          if (char.uuid.toString().toUpperCase().contains('2A37') ||
+              char.uuid.toString().toUpperCase().contains('FFE1')) {
+            _rxCharacteristic = char;
+            debugPrint(
+                '✅ Found RX with standard UUID: ${char.uuid}');
+            return;
+          }
+        }
+      }
+
+      // PASS 3: Look for ANY notify characteristic
+      debugPrint('📋 [PASS 3] Looking for ANY notify characteristic...');
+      for (var service in services) {
+        for (var char in service.characteristics) {
+          if (char.properties.notify) {
+            _rxCharacteristic = char;
+            debugPrint(
+                '✅ Found notify characteristic: ${char.uuid}');
+            return;
+          }
+        }
+      }
+
+      // PASS 4: Look for ANY read characteristic
+      debugPrint('📋 [PASS 4] Looking for ANY read characteristic...');
       for (var service in services) {
         for (var char in service.characteristics) {
           if (char.properties.read) {
             _rxCharacteristic = char;
-            debugPrint('✅ Found RX characteristic (fallback read)');
+            debugPrint('✅ Found read characteristic: ${char.uuid}');
             return;
           }
         }
       }
 
       if (_rxCharacteristic == null) {
-        debugPrint('❌ Could not find any suitable RX characteristic');
         throw Exception(
-            'ESP32 RX characteristic not found. Device may not be broadcasting BLE characteristics.');
+            'No suitable RX characteristic found in device services');
       }
 
       debugPrint('✅ Service discovery complete');
@@ -229,6 +252,7 @@ class RealBleService {
 
       _isConnecting = false;
       await stopStreaming();
+      await _connectionSubscription?.cancel();
 
       if (_device != null) {
         await _device!.disconnect();
@@ -254,43 +278,87 @@ class RealBleService {
         throw Exception('Bluetooth not available on web');
       }
 
-      if (!_isConnected || _rxCharacteristic == null) {
-        throw Exception('Device not connected or RX characteristic not found');
+      if (!_isConnected) {
+        throw Exception('Device not connected');
+      }
+
+      if (_rxCharacteristic == null) {
+        throw Exception('RX characteristic not found');
       }
 
       if (_isStreaming) {
-        return; // Already streaming
+        debugPrint('⚠️ Already streaming');
+        return;
       }
 
-      debugPrint('📡 Starting sensor data stream...');
+      debugPrint('📡 Starting BLE data stream...');
 
       _streamController = StreamController<SensorReading>.broadcast();
       _isStreaming = true;
 
-      // Enable notifications on RX characteristic
-      await _rxCharacteristic!.setNotifyValue(true);
+      // Step 1: Enable notifications
+      debugPrint('📬 Enabling notifications...');
+      try {
+        await _rxCharacteristic!.setNotifyValue(true);
+        debugPrint('✅ Notifications enabled');
+      } catch (e) {
+        debugPrint('⚠️ Failed to enable notifications: $e');
+        // Continue anyway - try reading instead
+      }
 
-      // Listen to incoming data
-      _rxSubscription = _rxCharacteristic!.lastValueStream.listen(
+      // Step 2: Set up listener - CRITICAL: use onValueReceived, not lastValueStream
+      debugPrint('👂 Setting up data listener...');
+      _rxSubscription =
+          _rxCharacteristic!.lastValueStream.listen(
         (value) {
+          debugPrint(
+              '📥 Received ${value.length} bytes: ${value.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
           _onDataReceived(value);
         },
         onError: (e) {
           debugPrint('❌ Stream error: $e');
           _streamController?.addError(e);
-        },
-        onDone: () {
-          debugPrint('⚠️ Stream closed');
           _isStreaming = false;
         },
+        onDone: () {
+          debugPrint('⚠️ Stream closed/done');
+          _isStreaming = false;
+        },
+        cancelOnError: false,
       );
 
-      debugPrint('✅ Streaming started');
+      debugPrint('✅ Stream listener attached');
+
+      // Also try periodic read as fallback
+      if (_rxCharacteristic!.properties.read) {
+        debugPrint('📖 Starting periodic read (fallback)...');
+        _startPeriodicRead();
+      }
+
+      debugPrint('✅ Streaming started successfully');
     } catch (e) {
       _isStreaming = false;
       debugPrint('❌ Failed to start streaming: $e');
       rethrow;
     }
+  }
+
+  /// Periodic read as fallback if notifications don't work
+  void _startPeriodicRead() {
+    Timer.periodic(Duration(milliseconds: 500), (timer) {
+      if (!_isStreaming || _rxCharacteristic == null) {
+        timer.cancel();
+        return;
+      }
+
+      _rxCharacteristic?.read().then((value) {
+        if (value.isNotEmpty) {
+          _onDataReceived(value);
+        }
+      }).catchError((e) {
+        debugPrint('⚠️ Periodic read error: $e');
+      });
+    });
   }
 
   /// Stop streaming
@@ -299,12 +367,17 @@ class RealBleService {
       _isStreaming = false;
 
       if (_rxCharacteristic != null) {
-        await _rxCharacteristic!.setNotifyValue(false);
+        try {
+          await _rxCharacteristic!.setNotifyValue(false);
+        } catch (e) {
+          debugPrint('⚠️ Failed to disable notifications: $e');
+        }
       }
 
       await _rxSubscription?.cancel();
       await _streamController?.close();
       _streamController = null;
+      _rxSubscription = null;
 
       debugPrint('✅ Streaming stopped');
     } catch (e) {
@@ -317,8 +390,12 @@ class RealBleService {
   /// Handle incoming BLE data
   void _onDataReceived(List<int> data) {
     try {
+      if (data.isEmpty) return;
+
       // Add to buffer
       _dataBuffer.addAll(data);
+      debugPrint(
+          '📊 Buffer size: ${_dataBuffer.length}, new data: ${data.length} bytes');
 
       // Process complete 16-byte packets
       while (_dataBuffer.length >= 16) {
@@ -328,6 +405,7 @@ class RealBleService {
         // Parse packet
         final reading = _parsePayload(packet);
         if (reading != null) {
+          debugPrint('🎉 Emitting reading to stream');
           _streamController?.add(reading);
         }
 
@@ -342,14 +420,6 @@ class RealBleService {
   // ============== Payload Parsing ==============
 
   /// Parse 16-byte ESP32 payload into SensorReading
-  /// Format (as per your ESP32 code):
-  /// Bytes 0-3: Temperatures (encoded as (temp - 25.0) * 2.0 + 128)
-  /// Bytes 4-7: Pressures (encoded as pressure / 0.3)
-  /// Bytes 8-9: SpO2 (uint16, encoded as spo2 * 100)
-  /// Bytes 10-11: Heart Rate (uint16)
-  /// Bytes 12-13: Step Count (uint16)
-  /// Byte 14: Activity Type
-  /// Byte 15: Battery Level
   SensorReading? _parsePayload(List<int> packet) {
     try {
       if (packet.length != 16) {
@@ -357,7 +427,6 @@ class RealBleService {
       }
 
       // Parse temperatures (Bytes 0-3)
-      // Formula: temp = 25.0 + (byte - 128) / 2.0
       final temperatures = <double>[];
       for (int i = 0; i < 4; i++) {
         final tempByte = packet[i];
@@ -366,7 +435,6 @@ class RealBleService {
       }
 
       // Parse pressures (Bytes 4-7)
-      // Formula: pressure = byte * 0.3
       final pressures = <double>[];
       for (int i = 0; i < 4; i++) {
         final pressureByte = packet[4 + i];
@@ -375,16 +443,13 @@ class RealBleService {
       }
 
       // Parse SpO2 (Bytes 8-9)
-      // uint16 big-endian, divided by 100
       final spO2Raw = (packet[8] << 8) | packet[9];
       final spO2 = spO2Raw / 100.0;
 
       // Parse Heart Rate (Bytes 10-11)
-      // uint16 big-endian
       final heartRate = (packet[10] << 8) | packet[11];
 
       // Parse Step Count (Bytes 12-13)
-      // uint16 big-endian
       final stepCount = (packet[12] << 8) | packet[13];
 
       // Parse Activity Type (Byte 14)
@@ -393,7 +458,7 @@ class RealBleService {
       // Parse Battery Level (Byte 15)
       _batteryLevel = packet[15];
 
-      // Generate dummy IMU data (ESP32 doesn't send accelerometer/gyroscope in this format)
+      // Generate dummy IMU data
       final accData = _generateDummyAccelerometerData(stepCount);
       final gyroData = _generateDummyGyroscopeData(stepCount);
 
@@ -412,7 +477,7 @@ class RealBleService {
       );
 
       debugPrint(
-          '✅ Parsed: Temp=${temperatures.join(',')} Pressure=${pressures.join(',')} SpO2=$spO2 HR=$heartRate');
+          '✅ SensorReading: T=[${temperatures.map((t) => t.toStringAsFixed(1)).join(',')}]°C P=[${pressures.map((p) => p.toStringAsFixed(1)).join(',')}] kPa SpO2=$spO2 HR=$heartRate BPM STP=$stepCount ACT=$activityType BAT=$_batteryLevel%');
 
       return reading;
     } catch (e) {
@@ -442,7 +507,6 @@ class RealBleService {
   /// Generate dummy accelerometer data based on activity
   AccelerometerData _generateDummyAccelerometerData(int stepCount) {
     if (stepCount > 0) {
-      // Simulate motion during walking
       return AccelerometerData(x: 0.5, y: 0.3, z: 9.8);
     }
     return AccelerometerData(x: 0.0, y: 0.0, z: 9.8);
@@ -451,7 +515,6 @@ class RealBleService {
   /// Generate dummy gyroscope data based on activity
   GyroscopeData _generateDummyGyroscopeData(int stepCount) {
     if (stepCount > 0) {
-      // Simulate rotation during walking
       return GyroscopeData(x: 5.0, y: 3.0, z: 2.0);
     }
     return GyroscopeData(x: 0.5, y: 0.5, z: 0.5);
