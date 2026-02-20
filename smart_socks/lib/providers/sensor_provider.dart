@@ -67,6 +67,9 @@ class SensorProvider extends ChangeNotifier {
   ActivityType get activityType =>
       _currentReading?.activityType ?? ActivityType.unknown;
 
+  /// Check if connection is in progress
+  Future<bool> get isConnectingAsync async => _isConnecting;
+
   // ============== Initialization ==============
 
   /// Set current user ID for user-specific data operations
