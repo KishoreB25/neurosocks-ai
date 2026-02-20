@@ -153,43 +153,66 @@ class RealBleService {
       final services = await _device!.discoverServices();
       debugPrint('Found ${services.length} services');
 
+      // Standard UUIDs
+      const String rxCharUuid =
+          '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
+
+      // Fallback: look for any characteristic with notify property
       for (var service in services) {
-        debugPrint('Service: ${service.uuid}');
+        debugPrint('📋 Service: ${service.uuid}');
 
         for (var char in service.characteristics) {
-          debugPrint('  Characteristic: ${char.uuid}');
-          debugPrint('    Properties: ${char.properties}');
+          debugPrint('  └─ Char: ${char.uuid} | Notify: ${char.properties.notify} | Read: ${char.properties.read} | Write: ${char.properties.write}');
 
-          // ESP32 BluetoothSerial typically uses these standard UUIDs:
-          // RX (notify): 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
-          // RX (notify): 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+          // Try exact UUID match first
+          if (char.uuid.toString().toUpperCase() == rxCharUuid.toUpperCase()) {
+            if (char.properties.notify) {
+              _rxCharacteristic = char;
+              debugPrint('✅ Found RX characteristic (exact UUID match)');
+              return;
+            }
+          }
 
-          const String uartServiceUuid =
-              '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
-          const String rxCharUuid =
-              '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
-
-          // Check if this is the UART service
-          if (service.uuid.toString().toUpperCase() ==
-                  uartServiceUuid.toUpperCase() ||
-              service.uuid.toString().toUpperCase().contains('180A') ||
-              service.uuid.toString().toUpperCase().contains('180D')) {
-            // Look for RX characteristic (notify)
-            if (char.uuid.toString().toUpperCase() ==
-                    rxCharUuid.toUpperCase() ||
-                char.uuid.toString().toUpperCase().contains('2A37')) {
-              if (char.properties.notify) {
-                _rxCharacteristic = char;
-                debugPrint('✅ Found RX characteristic (notify)');
-              }
+          // Try standard characteristic UUIDs (2A37 = Heart Rate, 2A19 = Battery)
+          if (char.uuid.toString().toUpperCase().contains('2A37') ||
+              char.uuid.toString().toUpperCase().contains('2A19')) {
+            if (char.properties.notify) {
+              _rxCharacteristic = char;
+              debugPrint('✅ Found RX characteristic (standard UUID: ${char.uuid})');
+              return;
             }
           }
         }
       }
 
+      // FALLBACK: If standard UUIDs not found, look for ANY notify characteristic
+      debugPrint('⚠️ Standard UUIDs not found. Searching for ANY notify characteristic...');
+      for (var service in services) {
+        for (var char in service.characteristics) {
+          if (char.properties.notify) {
+            _rxCharacteristic = char;
+            debugPrint('✅ Found RX characteristic (fallback notify)');
+            return;
+          }
+        }
+      }
+
+      // If still nothing, try read/write characteristics
+      debugPrint('⚠️ No notify characteristics found. Searching for read characteristic...');
+      for (var service in services) {
+        for (var char in service.characteristics) {
+          if (char.properties.read) {
+            _rxCharacteristic = char;
+            debugPrint('✅ Found RX characteristic (fallback read)');
+            return;
+          }
+        }
+      }
+
       if (_rxCharacteristic == null) {
+        debugPrint('❌ Could not find any suitable RX characteristic');
         throw Exception(
-            'EX32 UART RX characteristic not found. Trying fallback...');
+            'ESP32 RX characteristic not found. Device may not be broadcasting BLE characteristics.');
       }
 
       debugPrint('✅ Service discovery complete');
