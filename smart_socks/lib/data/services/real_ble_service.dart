@@ -6,7 +6,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../models/sensor_reading.dart';
-import '../../core/constants/sensor_constants.dart';
 
 /// Service for real BLE communication with smart sock device (ESP32 BluetoothSerial)
 /// WORKING IMPLEMENTATION - Tested workflow
@@ -45,8 +44,8 @@ class RealBleService {
 
   // ============== Scanning & Connection ==============
 
-  /// Scan for nearby NeuroSock devices
-  Future<List<ScanResult>> scanForDevices({int timeoutSeconds = 15}) async {
+  /// Scan for ALL nearby BLE devices (shows everything, not just NeuroSock)
+  Future<List<ScanResult>> scanForDevices({int timeoutSeconds = 10}) async {
     try {
       if (kIsWeb) {
         throw Exception('Bluetooth not supported on web platform');
@@ -58,33 +57,33 @@ class RealBleService {
         throw Exception('Bluetooth is disabled. Please enable Bluetooth.');
       }
 
-      debugPrint('🔍 Starting BLE scan for NeuroSock devices...');
+      debugPrint('🔍 Starting BLE scan for ALL devices...');
 
       // Stop any previous scan
       await FlutterBluePlus.stopScan();
 
       final discoveredDevices = <ScanResult>[];
+      final seenIds = <String>{};
 
+      // Start scan
       await FlutterBluePlus.startScan(
         timeout: Duration(seconds: timeoutSeconds),
         androidScanMode: AndroidScanMode.lowLatency,
       );
 
-      // Collect scan results while scanning
+      // Collect ALL scan results
       final subscription = FlutterBluePlus.scanResults.listen((results) {
         for (final result in results) {
-          debugPrint(
-              '📍 Scanned: ${result.device.platformName} - ${result.device.remoteId}');
-          // Looking for device name starting with "NeuroSock"
-          if (result.device.platformName
-              .startsWith(SensorConstants.bleDeviceNamePrefix)) {
-            // Avoid duplicates
-            if (!discoveredDevices
-                .any((r) => r.device.remoteId == result.device.remoteId)) {
-              debugPrint(
-                  '✅ Found device: ${result.device.platformName} (${result.device.remoteId})');
-              discoveredDevices.add(result);
-            }
+          final deviceId = result.device.remoteId.toString();
+          final deviceName = result.device.platformName.isNotEmpty 
+              ? result.device.platformName 
+              : 'Unknown (${deviceId.substring(0, 8)})';
+          
+          // Add ALL devices with a name (skip unnamed)
+          if (!seenIds.contains(deviceId)) {
+            seenIds.add(deviceId);
+            discoveredDevices.add(result);
+            debugPrint('📍 Found: $deviceName - $deviceId');
           }
         }
       });
@@ -96,12 +95,18 @@ class RealBleService {
       await FlutterBluePlus.stopScan();
       await subscription.cancel();
 
-      if (discoveredDevices.isEmpty) {
-        debugPrint(
-            '⚠️ No NeuroSock devices found. Make sure your ESP32 is powered on and advertising.');
-      } else {
-        debugPrint('✅ Scan complete. Found ${discoveredDevices.length} devices');
-      }
+      debugPrint('✅ Scan complete. Found ${discoveredDevices.length} devices total');
+
+      // Sort: NeuroSock devices first, then by name
+      discoveredDevices.sort((a, b) {
+        final aIsNeuro = a.device.platformName.toLowerCase().contains('neuro') || 
+                         a.device.platformName.toLowerCase().contains('sock');
+        final bIsNeuro = b.device.platformName.toLowerCase().contains('neuro') || 
+                         b.device.platformName.toLowerCase().contains('sock');
+        if (aIsNeuro && !bIsNeuro) return -1;
+        if (!aIsNeuro && bIsNeuro) return 1;
+        return a.device.platformName.compareTo(b.device.platformName);
+      });
 
       return discoveredDevices;
     } catch (e) {
@@ -119,21 +124,27 @@ class RealBleService {
       }
 
       if (_isConnecting) {
-        throw Exception('Connection already in progress');
+        debugPrint('⚠️ Connection already in progress');
+        return false;
       }
 
       _isConnecting = true;
       _device = device;
-      _deviceName = device.platformName;
+      _deviceName = device.platformName.isNotEmpty 
+          ? device.platformName 
+          : 'BLE Device';
 
-      debugPrint('🔗 Connecting to $_deviceName...');
+      debugPrint('🔗 Connecting to $_deviceName (${device.remoteId})...');
 
       // Monitor connection state
       _connectionSubscription?.cancel();
       _connectionSubscription = device.connectionState.listen((state) {
-        debugPrint('🔗 Connection state: $state');
+        debugPrint('🔗 Connection state changed: $state');
         if (state == BluetoothConnectionState.disconnected) {
           _isConnected = false;
+          _isStreaming = false;
+        } else if (state == BluetoothConnectionState.connected) {
+          _isConnected = true;
         }
       });
 
@@ -143,12 +154,17 @@ class RealBleService {
         autoConnect: false,
       );
 
-      debugPrint('✅ BLE Connected to device');
+      debugPrint('✅ BLE Connected to $_deviceName!');
       _isConnected = true;
       _isConnecting = false;
 
-      // Discover services to find RX/TX characteristics
-      await _discoverServices();
+      // Try to discover services (don't fail connection if this fails)
+      try {
+        await _discoverServices();
+      } catch (e) {
+        debugPrint('⚠️ Service discovery failed, but connection is OK: $e');
+        // Connection is still valid - just no data streaming capability
+      }
 
       return true;
     } catch (e) {

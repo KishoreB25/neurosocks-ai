@@ -110,25 +110,34 @@ class SensorProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      debugPrint('🔌 Connecting to device: ${device.platformName}...');
-      await _realBleService.connectToDevice(device);
+      debugPrint('🔌 SensorProvider: Connecting to ${device.platformName}...');
+      final connected = await _realBleService.connectToDevice(device);
       
-      _isConnected = true;
-      _errorMessage = null;
-      
-      debugPrint('✅ Connected to ${device.platformName}');
-      notifyListeners();
-      
-      // Auto-start streaming after connection
-      debugPrint('📡 Auto-starting stream...');
-      await startStreaming();
+      if (connected) {
+        _isConnected = true;
+        _errorMessage = null;
+        debugPrint('✅ SensorProvider: Connected to ${device.platformName}');
+        notifyListeners();
+        
+        // Try to start streaming (don't fail connection if this fails)
+        try {
+          debugPrint('📡 SensorProvider: Attempting to start stream...');
+          await startStreaming();
+          debugPrint('✅ SensorProvider: Streaming started');
+        } catch (e) {
+          debugPrint('⚠️ SensorProvider: Streaming failed but connection OK: $e');
+          // Connection is still valid
+        }
+      } else {
+        _isConnected = false;
+        _errorMessage = 'Connection returned false';
+      }
       
     } catch (e) {
       _errorMessage = 'Failed to connect: $e';
       _isConnected = false;
       _dataSource = 'disconnected';
-      debugPrint('❌ Connection failed: $e');
-      notifyListeners();
+      debugPrint('❌ SensorProvider: Connection failed: $e');
     }
 
     _isConnecting = false;
