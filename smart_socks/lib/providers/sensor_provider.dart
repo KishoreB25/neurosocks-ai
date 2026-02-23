@@ -67,6 +67,9 @@ class SensorProvider extends ChangeNotifier {
   ActivityType get activityType =>
       _currentReading?.activityType ?? ActivityType.unknown;
 
+  /// Check if connection is in progress
+  Future<bool> get isConnectingAsync async => _isConnecting;
+
   // ============== Initialization ==============
 
   /// Set current user ID for user-specific data operations
@@ -107,19 +110,34 @@ class SensorProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      debugPrint('🔌 Connecting to device: ${device.platformName}...');
-      await _realBleService.connectToDevice(device);
+      debugPrint('🔌 SensorProvider: Connecting to ${device.platformName}...');
+      final connected = await _realBleService.connectToDevice(device);
       
-      _isConnected = true;
-      _dataSource = 'disconnected';
-      _errorMessage = null;
+      if (connected) {
+        _isConnected = true;
+        _errorMessage = null;
+        debugPrint('✅ SensorProvider: Connected to ${device.platformName}');
+        notifyListeners();
+        
+        // Try to start streaming (don't fail connection if this fails)
+        try {
+          debugPrint('📡 SensorProvider: Attempting to start stream...');
+          await startStreaming();
+          debugPrint('✅ SensorProvider: Streaming started');
+        } catch (e) {
+          debugPrint('⚠️ SensorProvider: Streaming failed but connection OK: $e');
+          // Connection is still valid
+        }
+      } else {
+        _isConnected = false;
+        _errorMessage = 'Connection returned false';
+      }
       
-      debugPrint('✅ Connected to ${device.platformName}');
     } catch (e) {
       _errorMessage = 'Failed to connect: $e';
       _isConnected = false;
       _dataSource = 'disconnected';
-      debugPrint('❌ Connection failed: $e');
+      debugPrint('❌ SensorProvider: Connection failed: $e');
     }
 
     _isConnecting = false;
