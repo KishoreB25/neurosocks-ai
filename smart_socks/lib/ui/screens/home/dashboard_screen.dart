@@ -104,7 +104,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(width: 12),
                           Expanded(
                             child: Text(
-                              'Bluetooth not connected. Showing previous data. Go to Settings to connect device.',
+                              'Bluetooth is not connected. Showing previous data. Go to Settings to connect device.',
                               style: TextStyle(color: Colors.orange[900]),
                             ),
                           ),
