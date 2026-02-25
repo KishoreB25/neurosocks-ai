@@ -4,7 +4,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as classic;
 import '../data/models/sensor_reading.dart';
 import '../data/models/foot_data.dart';
 import '../data/models/risk_score.dart';
@@ -174,7 +173,7 @@ class SensorProvider extends ChangeNotifier {
 
   /// Connect to ESP32 via Classic Bluetooth (SPP)
   /// This is the correct protocol for ESP32 BluetoothSerial
-  Future<bool> connectToClassicDevice(classic.BluetoothDevice device) async {
+  Future<bool> connectToClassicDevice(ClassicBtDevice device) async {
     if (_isConnected || _isConnecting) {
       debugPrint('⚠️ Already connected or connecting');
       return _isConnected;

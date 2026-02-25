@@ -44,8 +44,8 @@ dependencies:
   # BLE Communication
   flutter_blue_plus: ^1.35.2
 
-  # Classic Bluetooth (SPP) - for ESP32 BluetoothSerial
-  flutter_bluetooth_serial: ^0.4.0
+  # Classic Bluetooth (SPP) — handled via native Android platform channel
+  # (No third-party package needed — see MainActivity.kt)
 
   # Charts & Visualization
   fl_chart: ^0.69.2

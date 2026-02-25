@@ -1,15 +1,16 @@
 // Classic Bluetooth Scan Screen
-// Discovers ESP32 devices using Classic Bluetooth (SPP), NOT BLE.
+// Discovers ESP32 devices using native Android platform channel (SPP).
 // The ESP32 uses BluetoothSerial.begin("NeuroSock") — Classic BT only.
 
 import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../data/services/classic_bluetooth_service.dart';
 import '../../../providers/sensor_provider.dart';
 
 /// Screen for scanning and connecting to Classic Bluetooth devices (ESP32)
@@ -21,14 +22,16 @@ class ClassicBtScanScreen extends StatefulWidget {
 }
 
 class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
-  List<BluetoothDevice> _pairedDevices = [];
-  List<BluetoothDevice> _discoveredDevices = [];
+  final ClassicBluetoothService _btService = ClassicBluetoothService();
+
+  List<ClassicBtDevice> _pairedDevices = [];
+  List<ClassicBtDevice> _discoveredDevices = [];
   bool _isScanning = false;
   bool _isConnecting = false;
-  BluetoothDevice? _connectingDevice;
+  String? _connectingAddress;
   String? _errorMessage;
-  BluetoothState _btState = BluetoothState.UNKNOWN;
-  StreamSubscription<BluetoothDiscoveryResult>? _discoverySub;
+  bool _btEnabled = true;
+  StreamSubscription<ClassicBtDevice>? _discoverySub;
 
   @override
   void initState() {
@@ -39,35 +42,29 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
   @override
   void dispose() {
     _discoverySub?.cancel();
+    _btService.stopDiscovery();
     super.dispose();
   }
 
   // ============== Init ==============
 
   Future<void> _init() async {
-    // Get Bluetooth state
+    // Check BT state
     try {
-      _btState = await FlutterBluetoothSerial.instance.state;
-      debugPrint('[ClassicBtScan] BT state: $_btState');
+      _btEnabled = await _btService.isEnabled();
+      debugPrint('[ClassicBtScan] BT enabled: $_btEnabled');
     } catch (e) {
-      debugPrint('[ClassicBtScan] Could not get BT state: $e');
-      _btState = BluetoothState.STATE_ON; // Assume on
+      debugPrint('[ClassicBtScan] Could not check BT state: $e');
+      _btEnabled = true; // Assume on
     }
     if (mounted) setState(() {});
-
-    // Listen to state changes
-    FlutterBluetoothSerial.instance.onStateChanged().listen((state) {
-      debugPrint('[ClassicBtScan] BT state → $state');
-      if (mounted) setState(() => _btState = state);
-      if (state == BluetoothState.STATE_ON) _loadPairedDevices();
-    });
 
     // Request permissions
     await _requestPermissions();
 
     // Load paired + start discovery
     await _loadPairedDevices();
-    await _startDiscovery();
+    if (_btEnabled) await _startDiscovery();
   }
 
   Future<void> _requestPermissions() async {
@@ -94,7 +91,7 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
 
   Future<void> _loadPairedDevices() async {
     try {
-      final bonded = await FlutterBluetoothSerial.instance.getBondedDevices();
+      final bonded = await _btService.getBondedDevices();
       debugPrint('[ClassicBtScan] Paired devices: ${bonded.length}');
       if (mounted) setState(() => _pairedDevices = bonded);
     } catch (e) {
@@ -115,11 +112,9 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
     debugPrint('[ClassicBtScan] 🔍 Starting discovery...');
     try {
       _discoverySub?.cancel();
-      _discoverySub =
-          FlutterBluetoothSerial.instance.startDiscovery().listen(
-        (result) {
-          final device = result.device;
-          // Skip unnamed or already-paired devices
+      _discoverySub = _btService.startDiscovery().listen(
+        (device) {
+          // Skip already-paired or already-found devices
           final isPaired =
               _pairedDevices.any((d) => d.address == device.address);
           final alreadyFound =
@@ -127,7 +122,7 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
 
           if (!isPaired && !alreadyFound) {
             debugPrint(
-              '[ClassicBtScan] Found: ${device.name ?? "?"} (${device.address})',
+              '[ClassicBtScan] Found: ${device.name.isEmpty ? "?" : device.name} (${device.address})',
             );
             if (mounted) {
               setState(() => _discoveredDevices.add(device));
@@ -158,21 +153,20 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
   }
 
   Future<void> _stopDiscovery() async {
-    try {
-      await FlutterBluetoothSerial.instance.cancelDiscovery();
-    } catch (_) {}
-    _discoverySub?.cancel();
+    await _btService.stopDiscovery();
+    await _discoverySub?.cancel();
+    _discoverySub = null;
     if (mounted) setState(() => _isScanning = false);
   }
 
   // ============== Connect ==============
 
-  Future<void> _connectToDevice(BluetoothDevice device) async {
+  Future<void> _connectToDevice(ClassicBtDevice device) async {
     if (_isConnecting) return;
 
     setState(() {
       _isConnecting = true;
-      _connectingDevice = device;
+      _connectingAddress = device.address;
       _errorMessage = null;
     });
 
@@ -187,11 +181,13 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
       if (ok && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ Connected to ${device.name ?? device.address}'),
+            content: Text(
+              '✅ Connected to ${device.name.isNotEmpty ? device.name : device.address}',
+            ),
             backgroundColor: AppColors.success,
           ),
         );
-        Navigator.pop(context, device);
+        Navigator.pop(context, true);
       } else if (mounted) {
         setState(() => _errorMessage = 'Connection returned false');
       }
@@ -210,7 +206,7 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
       if (mounted) {
         setState(() {
           _isConnecting = false;
-          _connectingDevice = null;
+          _connectingAddress = null;
         });
       }
     }
@@ -220,9 +216,6 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isOff = _btState == BluetoothState.STATE_OFF ||
-        _btState == BluetoothState.STATE_TURNING_OFF;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Connect Device'),
@@ -245,8 +238,8 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
             ),
         ],
       ),
-      body: isOff ? _buildBtOffView() : _buildDeviceList(),
-      floatingActionButton: !isOff && !_isScanning
+      body: !_btEnabled ? _buildBtOffView() : _buildDeviceList(),
+      floatingActionButton: _btEnabled && !_isScanning
           ? FloatingActionButton.extended(
               onPressed: _startDiscovery,
               icon: const Icon(Icons.search),
@@ -272,9 +265,23 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
           const SizedBox(height: 24),
           ElevatedButton.icon(
             onPressed: () async {
+              // Show system "Turn on Bluetooth?" dialog
               try {
-                await FlutterBluetoothSerial.instance.requestEnable();
-              } catch (_) {}
+                const channel = MethodChannel('com.neurosocks.app/classic_bt');
+                final enabled = await channel.invokeMethod<bool>('requestEnable');
+                if (enabled == true && mounted) {
+                  setState(() => _btEnabled = true);
+                  _init();
+                }
+              } catch (_) {
+                // Fallback: open BT settings page
+                try {
+                  const channel = MethodChannel('com.neurosocks.app/classic_bt');
+                  await channel.invokeMethod('openBluetoothSettings');
+                } catch (_) {}
+                await Future.delayed(const Duration(seconds: 2));
+                _init();
+              }
             },
             icon: const Icon(Icons.bluetooth),
             label: const Text('Enable Bluetooth'),
@@ -361,10 +368,10 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
     );
   }
 
-  Widget _buildDeviceTile(BluetoothDevice device, {bool isPaired = false}) {
+  Widget _buildDeviceTile(ClassicBtDevice device, {bool isPaired = false}) {
     final isThisConnecting =
-        _isConnecting && _connectingDevice?.address == device.address;
-    final name = device.name ?? device.address;
+        _isConnecting && _connectingAddress == device.address;
+    final name = device.name.isNotEmpty ? device.name : device.address;
     final isNeuroSock =
         name.toLowerCase().contains('neuro') ||
         name.toLowerCase().contains('sock');
@@ -374,7 +381,8 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: isNeuroSock
-            ? BorderSide(color: AppColors.primary.withValues(alpha: 0.5), width: 2)
+            ? BorderSide(
+                color: AppColors.primary.withValues(alpha: 0.5), width: 2)
             : BorderSide.none,
       ),
       child: ListTile(

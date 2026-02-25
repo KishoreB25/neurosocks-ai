@@ -1,15 +1,24 @@
 // Classic Bluetooth (SPP) Service for ESP32 BluetoothSerial
+// Uses native Android platform channel — NO third-party package needed.
 // The ESP32 sends 16-byte binary packets every 2 seconds via BluetoothSerial.
-// BLE (flutter_blue_plus) CANNOT read this data — only Classic BT can.
 
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:flutter/services.dart';
 import '../models/sensor_reading.dart';
 
+/// Lightweight model for a Classic Bluetooth device (name + MAC address)
+class ClassicBtDevice {
+  final String name;
+  final String address;
+  ClassicBtDevice({required this.name, required this.address});
+
+  @override
+  String toString() => '$name ($address)';
+}
+
 /// Service for Classic Bluetooth (SPP) communication with ESP32.
-/// The ESP32 uses BluetoothSerial.write(payload, 16) — this is SPP, not BLE.
+/// Communicates with native Kotlin via MethodChannel + EventChannel.
 class ClassicBluetoothService {
   // Singleton
   static final ClassicBluetoothService _instance =
@@ -17,13 +26,16 @@ class ClassicBluetoothService {
   factory ClassicBluetoothService() => _instance;
   ClassicBluetoothService._internal();
 
-  // Connection
-  BluetoothConnection? _connection;
-  BluetoothDevice? _device;
+  // Platform channels — must match MainActivity.kt exactly
+  static const _methodChannel = MethodChannel('com.neurosocks.app/classic_bt');
+  static const _dataEventChannel =
+      EventChannel('com.neurosocks.app/classic_bt_data');
+  static const _discoveryEventChannel =
+      EventChannel('com.neurosocks.app/classic_bt_discovery');
 
-  // Stream
-  StreamController<SensorReading>? _streamController;
-  StreamSubscription<Uint8List>? _inputSubscription;
+  // Parsed sensor stream exposed to the provider
+  StreamController<SensorReading>? _sensorController;
+  StreamSubscription? _rawDataSubscription;
 
   // State
   bool _isConnected = false;
@@ -39,119 +51,181 @@ class ClassicBluetoothService {
   bool get isConnecting => _isConnecting;
   String get deviceName => _deviceName;
   int get batteryLevel => _batteryLevel;
-  Stream<SensorReading>? get sensorStream => _streamController?.stream;
+  Stream<SensorReading>? get sensorStream => _sensorController?.stream;
+
+  // ============== Bluetooth State ==============
+
+  /// Check if Bluetooth adapter is enabled
+  Future<bool> isEnabled() async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('isEnabled') ?? false;
+    } catch (e) {
+      _log('isEnabled error: $e');
+      return false;
+    }
+  }
+
+  // ============== Discovery ==============
+
+  /// Get list of paired/bonded devices
+  Future<List<ClassicBtDevice>> getBondedDevices() async {
+    try {
+      final result = await _methodChannel.invokeMethod('getBondedDevices');
+      final list = (result as List).cast<Map>();
+      return list
+          .map((m) => ClassicBtDevice(
+                name: m['name']?.toString() ?? '',
+                address: m['address']?.toString() ?? '',
+              ))
+          .toList();
+    } catch (e) {
+      _log('getBondedDevices error: $e');
+      return [];
+    }
+  }
+
+  /// Start scanning for nearby Classic Bluetooth devices.
+  /// Returns a stream of discovered [ClassicBtDevice] objects.
+  Stream<ClassicBtDevice> startDiscovery() {
+    // Ask native to begin scanning
+    _methodChannel.invokeMethod('startDiscovery').catchError((e) {
+      _log('startDiscovery error: $e');
+    });
+
+    // Listen on the discovery EventChannel
+    return _discoveryEventChannel.receiveBroadcastStream().map((event) {
+      final m = Map<String, dynamic>.from(event as Map);
+      return ClassicBtDevice(
+        name: m['name']?.toString() ?? '',
+        address: m['address']?.toString() ?? '',
+      );
+    });
+  }
+
+  /// Stop discovery
+  Future<void> stopDiscovery() async {
+    try {
+      await _methodChannel.invokeMethod('stopDiscovery');
+    } catch (e) {
+      _log('stopDiscovery error: $e');
+    }
+  }
 
   // ============== Connection ==============
 
-  /// Connect to an ESP32 Classic Bluetooth device
-  Future<bool> connect(BluetoothDevice device) async {
+  /// Connect to an ESP32 Classic BT device by address
+  Future<bool> connect(ClassicBtDevice device) async {
     if (_isConnecting || _isConnected) {
-      debugPrint('[ClassicBT] Already connected or connecting');
+      _log('Already connected or connecting');
       return _isConnected;
     }
 
     _isConnecting = true;
-    _device = device;
-    _deviceName = device.name ?? 'ESP32';
+    _deviceName = device.name.isNotEmpty ? device.name : 'ESP32';
 
     try {
-      debugPrint('[ClassicBT] Connecting to $_deviceName (${device.address})...');
+      _log('Connecting to $_deviceName (${device.address})...');
 
-      _connection = await BluetoothConnection.toAddress(device.address);
+      await _methodChannel.invokeMethod('connect', {'address': device.address});
 
       _isConnected = true;
       _isConnecting = false;
       _buffer.clear();
-
-      debugPrint('[ClassicBT] ✅ Connected to $_deviceName');
+      _log('✅ Connected to $_deviceName');
       return true;
-    } catch (e) {
-      debugPrint('[ClassicBT] ❌ Connection failed: $e');
+    } on PlatformException catch (e) {
+      _log('❌ Connection failed: ${e.message}');
       _isConnected = false;
       _isConnecting = false;
-      _connection = null;
+      rethrow;
+    } catch (e) {
+      _log('❌ Connection failed: $e');
+      _isConnected = false;
+      _isConnecting = false;
       rethrow;
     }
   }
 
-  /// Disconnect
+  /// Disconnect from the current device
   Future<void> disconnect() async {
     try {
-      debugPrint('[ClassicBT] Disconnecting...');
+      _log('Disconnecting...');
       await stopListening();
-      await _connection?.close();
-      _connection?.dispose();
+      await _methodChannel.invokeMethod('disconnect');
     } catch (e) {
-      debugPrint('[ClassicBT] ⚠️ Disconnect error: $e');
+      _log('⚠️ Disconnect error: $e');
     }
 
-    _connection = null;
     _isConnected = false;
-    _device = null;
+    _deviceName = '';
     _buffer.clear();
-    debugPrint('[ClassicBT] ✅ Disconnected');
+    _log('✅ Disconnected');
   }
 
   // ============== Data Listening ==============
 
-  /// Start listening for 16-byte sensor packets from ESP32
+  /// Start listening for 16-byte sensor packets from ESP32.
+  /// Raw bytes arrive via EventChannel, get buffered and parsed here.
   Future<void> startListening() async {
-    if (_connection == null || !_isConnected) {
+    if (!_isConnected) {
       throw Exception('Not connected to any device');
     }
 
-    // Create fresh stream controller
-    _streamController?.close();
-    _streamController = StreamController<SensorReading>.broadcast();
+    // Create fresh sensor stream
+    _sensorController?.close();
+    _sensorController = StreamController<SensorReading>.broadcast();
     _buffer.clear();
 
-    debugPrint('[ClassicBT] 📡 Listening for sensor data...');
+    _log('📡 Listening for sensor data...');
 
-    _inputSubscription = _connection!.input?.listen(
-      (Uint8List data) {
-        _onDataReceived(data);
+    _rawDataSubscription =
+        _dataEventChannel.receiveBroadcastStream().listen(
+      (event) {
+        // Native sends List<int> (bytes)
+        final bytes = (event as List).cast<int>();
+        _onDataReceived(bytes);
       },
       onError: (error) {
-        debugPrint('[ClassicBT] ❌ Stream error: $error');
-        _streamController?.addError(error);
+        _log('❌ Data stream error: $error');
+        _isConnected = false;
+        _sensorController?.addError(error);
       },
       onDone: () {
-        debugPrint('[ClassicBT] ⚠️ Stream ended (device disconnected?)');
+        _log('⚠️ Data stream ended (device disconnected?)');
         _isConnected = false;
       },
-      cancelOnError: false,
     );
   }
 
-  /// Stop listening
+  /// Stop listening for data
   Future<void> stopListening() async {
-    await _inputSubscription?.cancel();
-    _inputSubscription = null;
-    await _streamController?.close();
-    _streamController = null;
+    await _rawDataSubscription?.cancel();
+    _rawDataSubscription = null;
+    await _sensorController?.close();
+    _sensorController = null;
     _buffer.clear();
   }
 
   // ============== Data Processing ==============
 
   /// Accumulate bytes and parse complete 16-byte packets
-  void _onDataReceived(Uint8List data) {
+  void _onDataReceived(List<int> data) {
     _buffer.addAll(data);
 
-    debugPrint(
-      '[ClassicBT] 📥 +${data.length} bytes (buffer: ${_buffer.length}) '
+    _log(
+      '📥 +${data.length} bytes (buffer: ${_buffer.length}) '
       'raw: ${data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}',
     );
 
-    // Process all complete 16-byte packets in the buffer
+    // Process all complete 16-byte packets
     while (_buffer.length >= 16) {
       final packet = _buffer.sublist(0, 16);
       _buffer.removeRange(0, 16);
 
       final reading = _parsePayload(packet);
       if (reading != null) {
-        debugPrint('[ClassicBT] 🎉 Parsed reading → emitting to stream');
-        _streamController?.add(reading);
+        _log('🎉 Parsed reading → emitting');
+        _sensorController?.add(reading);
       }
     }
   }
@@ -202,13 +276,11 @@ class ClassicBluetoothService {
       // ---- SpO2 (Bytes 8-9) ----
       final spO2Raw = (packet[8] << 8) | packet[9];
       double spO2 = spO2Raw / 100.0;
-      // Clamp to physiological range
       if (spO2 > 100.0) spO2 = 100.0;
       if (spO2 < 0.0) spO2 = 0.0;
 
       // ---- Heart Rate (Bytes 10-11) ----
       int heartRate = (packet[10] << 8) | packet[11];
-      // Clamp to physiological range
       if (heartRate > 250) heartRate = 250;
       if (heartRate < 0) heartRate = 0;
 
@@ -221,7 +293,7 @@ class ClassicBluetoothService {
       // ---- Battery Level (Byte 15) ----
       _batteryLevel = packet[15].clamp(0, 100);
 
-      // Dummy IMU (not transmitted by ESP32)
+      // Placeholder IMU (not transmitted by ESP32)
       final acc = AccelerometerData(
         x: stepCount > 0 ? 0.5 : 0.0,
         y: stepCount > 0 ? 0.3 : 0.0,
@@ -246,8 +318,8 @@ class ClassicBluetoothService {
         activityType: activityType,
       );
 
-      debugPrint(
-        '[ClassicBT] ✅ T=[${temperatures.map((t) => t.toStringAsFixed(1)).join(',')}]°C '
+      _log(
+        '✅ T=[${temperatures.map((t) => t.toStringAsFixed(1)).join(',')}]°C '
         'P=[${pressures.map((p) => p.toStringAsFixed(1)).join(',')}]kPa '
         'SpO2=${spO2.toStringAsFixed(1)}% HR=$heartRate STP=$stepCount '
         'ACT=$activityType BAT=$_batteryLevel%',
@@ -255,7 +327,7 @@ class ClassicBluetoothService {
 
       return reading;
     } catch (e) {
-      debugPrint('[ClassicBT] ❌ Parse error: $e');
+      _log('❌ Parse error: $e');
       return null;
     }
   }
@@ -277,12 +349,12 @@ class ClassicBluetoothService {
     }
   }
 
-  // ============== Debug ==============
+  // ============== Logging ==============
 
-  static void debugPrint(String msg) {
+  static void _log(String msg) {
     if (kDebugMode) {
       // ignore: avoid_print
-      print(msg);
+      print('[ClassicBT] $msg');
     }
   }
 }
