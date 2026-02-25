@@ -13,8 +13,7 @@ import '../../widgets/sensor_card.dart';
 import '../../widgets/stat_card.dart';
 import '../../widgets/alert_tile.dart';
 import '../../widgets/connection_status.dart';
-import '../../widgets/loading_shimmer.dart';
-import 'device_scan_screen.dart';
+import 'classic_bt_scan_screen.dart';
 
 /// Main dashboard screen showing overview of foot health
 class DashboardScreen extends StatefulWidget {
@@ -75,12 +74,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         onRefresh: _onRefresh,
         child: Consumer3<SensorProvider, RiskProvider, UserProvider>(
           builder: (context, sensorProvider, riskProvider, userProvider, _) {
-            // Show loading skeleton if no data yet
-            if (sensorProvider.currentReading == null &&
-                !sensorProvider.isStreaming) {
-              return const DashboardSkeleton();
-            }
-
             return SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
@@ -104,7 +97,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(width: 12),
                           Expanded(
                             child: Text(
-                              'Bluetooth is not connected. Showing previous data. Go to Settings to connect device.',
+                              'Device not connected. All readings are zero. Go to Settings to connect your device.',
                               style: TextStyle(color: Colors.orange[900]),
                             ),
                           ),
@@ -231,7 +224,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           // Navigate to device scan screen to connect
           Navigator.of(context).push(
             MaterialPageRoute(
-              builder: (context) => const DeviceScanScreen(),
+              builder: (context) => const ClassicBtScanScreen(),
             ),
           );
         }
@@ -347,7 +340,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildSensorSection(SensorProvider provider) {
-    final reading = provider.currentReading;
+    final reading = provider.currentReading; // null when disconnected
+    final isLive = provider.isConnected && reading != null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -355,9 +349,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              AppStrings.currentReadings,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                Text(
+                  AppStrings.currentReadings,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                if (isLive) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.success.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: const BoxDecoration(
+                            color: AppColors.success,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Text(
+                          'LIVE',
+                          style: TextStyle(
+                            color: AppColors.success,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
             ),
             TextButton(
               onPressed: () {

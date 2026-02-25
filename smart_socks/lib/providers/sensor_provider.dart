@@ -4,10 +4,12 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as classic;
 import '../data/models/sensor_reading.dart';
 import '../data/models/foot_data.dart';
 import '../data/models/risk_score.dart';
 import '../data/services/real_ble_service.dart';
+import '../data/services/classic_bluetooth_service.dart';
 import '../data/services/storage_service.dart';
 import '../data/services/foot_ulcer_prediction_service.dart';
 import '../data/services/firebase/firebase_firestore_service.dart';
@@ -16,19 +18,21 @@ import '../data/services/firebase/firebase_firestore_service.dart';
 /// PRODUCTION: Real Bluetooth only OR Firestore historical data
 class SensorProvider extends ChangeNotifier {
   final RealBleService _realBleService = RealBleService();
+  final ClassicBluetoothService _classicBtService = ClassicBluetoothService();
   final StorageService _storageService = StorageService();
   final FirebaseFirestoreService _firestoreService = FirebaseFirestoreService();
 
   // Public getter for RealBleService (for device scanning)
   RealBleService get realBleService => _realBleService;
+  // Public getter for ClassicBluetoothService
+  ClassicBluetoothService get classicBtService => _classicBtService;
   
   // User context
   String? _currentUserId;
 
   // Current state
   SensorReading? _currentReading;
-  FootData? _leftFootData;
-  FootData? _rightFootData;
+  FootData? _footData;  // Single foot (ESP32 sends data for one leg only)
   bool _isConnected = false;
   bool _isStreaming = false;
   bool _isConnecting = false;
@@ -45,27 +49,48 @@ class SensorProvider extends ChangeNotifier {
 
   // ============== Getters ==============
 
-  SensorReading? get currentReading => _currentReading;
-  FootData? get leftFootData => _leftFootData;
-  FootData? get rightFootData => _rightFootData;
+  /// Returns the current reading ONLY when connected (otherwise null → zeros)
+  SensorReading? get currentReading => _isConnected ? _currentReading : null;
+  FootData? get footData => _isConnected ? _footData : null;
+  /// Legacy getters for compatibility — both point to the single foot
+  FootData? get leftFootData => footData;
+  FootData? get rightFootData => null; // Only one leg connected
   bool get isConnected => _isConnected;
   bool get isStreaming => _isStreaming;
   bool get isConnecting => _isConnecting;
   bool get isLoadingFromFirestore => _isLoadingFromFirestore;
   String? get errorMessage => _errorMessage;
-  String get deviceName => _realBleService.deviceName;
-  int get batteryLevel => _realBleService.batteryLevel;
+  String get deviceName {
+    if (!_isConnected) return 'Not Connected';
+    if (_classicBtService.isConnected) return _classicBtService.deviceName;
+    return _realBleService.deviceName;
+  }
+  int get batteryLevel {
+    if (!_isConnected) return 0;
+    if (_classicBtService.isConnected) return _classicBtService.batteryLevel;
+    return _realBleService.batteryLevel;
+  }
   List<SensorReading> get recentReadings => List.unmodifiable(_recentReadings);
   String get dataSource => _dataSource;
 
-  // Convenience getters for current reading
-  List<double> get temperatures => _currentReading?.temperatures ?? [];
-  List<double> get pressures => _currentReading?.pressures ?? [];
-  double get spO2 => _currentReading?.spO2 ?? 0;
-  int get heartRate => _currentReading?.heartRate ?? 0;
-  int get stepCount => _currentReading?.stepCount ?? 0;
+  /// Raw reading (for internal/history use, bypasses connection check)
+  SensorReading? get rawReading => _currentReading;
+
+  // Convenience getters — return ZERO when device not connected
+  List<double> get temperatures =>
+      _isConnected ? (_currentReading?.temperatures ?? []) : [];
+  List<double> get pressures =>
+      _isConnected ? (_currentReading?.pressures ?? []) : [];
+  double get spO2 =>
+      _isConnected ? (_currentReading?.spO2 ?? 0) : 0;
+  int get heartRate =>
+      _isConnected ? (_currentReading?.heartRate ?? 0) : 0;
+  int get stepCount =>
+      _isConnected ? (_currentReading?.stepCount ?? 0) : 0;
   ActivityType get activityType =>
-      _currentReading?.activityType ?? ActivityType.unknown;
+      _isConnected
+          ? (_currentReading?.activityType ?? ActivityType.unknown)
+          : ActivityType.unknown;
 
   /// Check if connection is in progress
   Future<bool> get isConnectingAsync async => _isConnecting;
@@ -145,22 +170,84 @@ class SensorProvider extends ChangeNotifier {
     return _isConnected;
   }
 
-  /// Disconnect from the device
+  // ============== Classic Bluetooth Connection ==============
+
+  /// Connect to ESP32 via Classic Bluetooth (SPP)
+  /// This is the correct protocol for ESP32 BluetoothSerial
+  Future<bool> connectToClassicDevice(classic.BluetoothDevice device) async {
+    if (_isConnected || _isConnecting) {
+      debugPrint('⚠️ Already connected or connecting');
+      return _isConnected;
+    }
+
+    _isConnecting = true;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      debugPrint('🔌 SensorProvider: Classic BT connecting to ${device.name}...');
+      final connected = await _classicBtService.connect(device);
+
+      if (connected) {
+        _isConnected = true;
+        _errorMessage = null;
+        debugPrint('✅ SensorProvider: Classic BT connected to ${device.name}');
+        notifyListeners();
+
+        // Start listening for sensor data
+        try {
+          debugPrint('📡 SensorProvider: Starting Classic BT stream...');
+          await _classicBtService.startListening();
+
+          _subscription?.cancel();
+          _subscription = _classicBtService.sensorStream?.listen(
+            _onReadingReceived,
+            onError: _onStreamError,
+            onDone: _onStreamDone,
+          );
+
+          _isStreaming = true;
+          _dataSource = 'bluetooth';
+          debugPrint('✅ SensorProvider: Classic BT streaming started');
+        } catch (e) {
+          debugPrint('⚠️ SensorProvider: Classic BT streaming failed: $e');
+        }
+      } else {
+        _isConnected = false;
+        _errorMessage = 'Classic BT connection returned false';
+      }
+    } catch (e) {
+      _errorMessage = 'Failed to connect via Classic BT: $e';
+      _isConnected = false;
+      _dataSource = 'disconnected';
+      debugPrint('❌ SensorProvider: Classic BT connection failed: $e');
+    }
+
+    _isConnecting = false;
+    notifyListeners();
+    return _isConnected;
+  }
+
+  /// Disconnect from the device — clears all live data (shows zeros)
   Future<void> disconnect() async {
     try {
       await stopStreaming();
+      // Disconnect both services (only the connected one will do anything)
       await _realBleService.disconnect();
-      
-      _isConnected = false;
-      _dataSource = 'disconnected';
-      notifyListeners();
-      
-      debugPrint('✅ Disconnected from device');
+      await _classicBtService.disconnect();
     } catch (e) {
       _errorMessage = 'Disconnect error: $e';
       debugPrint('❌ Disconnect error: $e');
-      notifyListeners();
     }
+
+    // Always clear state so dashboard shows zeros
+    _isConnected = false;
+    _isStreaming = false;
+    _currentReading = null;
+    _footData = null;
+    _dataSource = 'disconnected';
+    notifyListeners();
+    debugPrint('✅ Disconnected — all readings cleared to zero');
   }
 
   // ============== Streaming Management ==============
@@ -173,11 +260,10 @@ class SensorProvider extends ChangeNotifier {
       return true;
     }
 
-    // If not connected via Bluetooth, load from Firestore
+    // If not connected via Bluetooth, do nothing — dashboard shows zeros
     if (!_isConnected) {
-      debugPrint('⚠️ Not connected via Bluetooth. Loading historical data from Firestore...');
-      await _loadRecentDataFromFirestore();
-      return false; // Return false to indicate we're not streaming live data
+      debugPrint('⚠️ Not connected via Bluetooth. Dashboard will show zeros.');
+      return false;
     }
 
     try {
@@ -307,12 +393,11 @@ class SensorProvider extends ChangeNotifier {
     }
   }
 
-  /// Load recent data from Firestore (when not connected via Bluetooth)
+  /// Load recent data from Firestore (for history/trends only, NOT as current reading)
+  /// Current reading is ONLY populated by live Bluetooth data
   Future<void> _loadRecentDataFromFirestore() async {
     if (_currentUserId == null) {
       debugPrint('⚠️ Cannot load from Firestore: userId is null');
-      _errorMessage = 'Not logged in';
-      notifyListeners();
       return;
     }
 
@@ -320,7 +405,7 @@ class SensorProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      debugPrint('📥 Loading recent readings from Firestore...');
+      debugPrint('📥 Loading historical readings from Firestore...');
       
       final readings = await _firestoreService.getRecentReadings(
         userId: _currentUserId!,
@@ -328,29 +413,16 @@ class SensorProvider extends ChangeNotifier {
       );
 
       if (readings.isEmpty) {
-        _errorMessage = 'No previous data available';
-        _dataSource = 'disconnected';
         debugPrint('⚠️ No readings found in Firestore');
       } else {
-        // Load most recent reading
-        final mostRecent = readings.first;
-        _currentReading = mostRecent;
-        _dataSource = 'firestore';
-        _errorMessage = null;
-
-        // Load all readings into history
+        // Load into history only — do NOT set as _currentReading
+        // _currentReading must come from live Bluetooth connection
         _recentReadings.clear();
         _recentReadings.addAll(readings);
 
-        // Update foot data
-        _updateFootData(mostRecent);
-
-        debugPrint('✅ Loaded ${readings.length} readings from Firestore');
-        debugPrint('📊 Latest: Temp=${mostRecent.temperatures}, Pressure=${mostRecent.pressures}');
+        debugPrint('✅ Loaded ${readings.length} historical readings from Firestore');
       }
     } catch (e) {
-      _errorMessage = 'Failed to load data: $e';
-      _dataSource = 'disconnected';
       debugPrint('❌ Firestore load error: $e');
     }
 
@@ -358,11 +430,10 @@ class SensorProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Update foot data from sensor reading
+  /// Update foot data from sensor reading (single foot — one ESP32)
   void _updateFootData(SensorReading reading) {
-    // Create foot zone data from sensor readings
-    // Sensor zones 1-5: Left foot (Heel, Ball, Arch, Toe)
-    // Sensor zones 6-10: Right foot (Heel, Ball, Arch, Toe)
+    // ESP32 sends 4 temperature + 4 pressure zones for ONE foot
+    // Zones: 0=Heel, 1=Ball, 2=Arch, 3=Toe
     
     final zones = <FootZone>[];
     
@@ -378,17 +449,8 @@ class SensorProvider extends ChangeNotifier {
     }
 
     if (zones.length >= 4) {
-      _leftFootData = FootData(
-        side: FootSide.left,
-        heel: zones[0],
-        ball: zones[1],
-        arch: zones[2],
-        toe: zones[3],
-        timestamp: reading.timestamp,
-      );
-
-      _rightFootData = FootData(
-        side: FootSide.right,
+      _footData = FootData(
+        side: FootSide.left, // Single leg setup
         heel: zones[0],
         ball: zones[1],
         arch: zones[2],
@@ -413,33 +475,33 @@ class SensorProvider extends ChangeNotifier {
 
   // ============== Data Access ==============
 
-  /// Get average temperature across all zones
+  /// Get average temperature across all zones (0 when disconnected)
   double get averageTemperature {
-    if (_currentReading == null || _currentReading!.temperatures.isEmpty) {
+    if (!_isConnected || _currentReading == null || _currentReading!.temperatures.isEmpty) {
       return 0;
     }
     return _currentReading!.averageTemperature;
   }
 
-  /// Get max temperature
+  /// Get max temperature (0 when disconnected)
   double get maxTemperature {
-    if (_currentReading == null || _currentReading!.temperatures.isEmpty) {
+    if (!_isConnected || _currentReading == null || _currentReading!.temperatures.isEmpty) {
       return 0;
     }
     return _currentReading!.maxTemperature;
   }
 
-  /// Get average pressure
+  /// Get average pressure (0 when disconnected)
   double get averagePressure {
-    if (_currentReading == null || _currentReading!.pressures.isEmpty) {
+    if (!_isConnected || _currentReading == null || _currentReading!.pressures.isEmpty) {
       return 0;
     }
     return _currentReading!.averagePressure;
   }
 
-  /// Get max pressure
+  /// Get max pressure (0 when disconnected)
   double get maxPressure {
-    if (_currentReading == null || _currentReading!.pressures.isEmpty) {
+    if (!_isConnected || _currentReading == null || _currentReading!.pressures.isEmpty) {
       return 0;
     }
     return _currentReading!.maxPressure;
@@ -510,6 +572,7 @@ class SensorProvider extends ChangeNotifier {
   @override
   void dispose() {
     _subscription?.cancel();
+    _classicBtService.disconnect();
     // RealBleService manages its own lifecycle
     super.dispose();
   }
