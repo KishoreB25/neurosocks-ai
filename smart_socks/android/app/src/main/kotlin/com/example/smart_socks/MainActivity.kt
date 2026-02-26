@@ -50,15 +50,31 @@ class MainActivity : FlutterActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 BluetoothDevice.ACTION_FOUND -> {
-                    val device: BluetoothDevice? =
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                    device?.let {
-                        val info = mapOf(
-                            "name" to (it.name ?: ""),
-                            "address" to it.address
-                        )
-                        mainHandler.post { discoveryEventSink?.success(info) }
-                        Log.d(TAG, "Found: ${it.name ?: "?"} (${it.address})")
+                    try {
+                        // Use new API on Android 13+ (TIRAMISU), deprecated fallback below
+                        val device: BluetoothDevice? =
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                intent.getParcelableExtra(
+                                    BluetoothDevice.EXTRA_DEVICE,
+                                    BluetoothDevice::class.java
+                                )
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                            }
+                        device?.let {
+                            // getName() requires BLUETOOTH_CONNECT on Android 12+;
+                            // wrap in try/catch so address still gets sent if name fails
+                            val name = try { it.name ?: "" } catch (_: SecurityException) { "" }
+                            val address = it.address ?: ""
+                            if (address.isNotEmpty()) {
+                                val info = mapOf("name" to name, "address" to address)
+                                mainHandler.post { discoveryEventSink?.success(info) }
+                                Log.d(TAG, "Found: ${name.ifEmpty { "?" }} ($address)")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error processing discovered device: ${e.message}")
                     }
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
@@ -84,8 +100,12 @@ class MainActivity : FlutterActivity() {
                             result.success(bluetoothAdapter?.isEnabled == true)
                         }
                         "getBondedDevices" -> {
-                            val devices = bluetoothAdapter?.bondedDevices?.map { d ->
-                                mapOf("name" to (d.name ?: ""), "address" to d.address)
+                            val devices = bluetoothAdapter?.bondedDevices?.mapNotNull { d ->
+                                try {
+                                    val name = try { d.name ?: "" } catch (_: SecurityException) { "" }
+                                    val address = d.address ?: ""
+                                    if (address.isNotEmpty()) mapOf("name" to name, "address" to address) else null
+                                } catch (_: Exception) { null }
                             } ?: emptyList()
                             result.success(devices)
                         }
@@ -186,6 +206,8 @@ class MainActivity : FlutterActivity() {
     /// Called from EventChannel onListen — no MethodChannel.Result needed
     private fun startBtDiscoveryAuto() {
         try {
+            Log.d(TAG, "startBtDiscoveryAuto: adapter=${bluetoothAdapter != null}, enabled=${bluetoothAdapter?.isEnabled}")
+
             val filter = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_FOUND)
                 addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
@@ -200,13 +222,18 @@ class MainActivity : FlutterActivity() {
                 registerReceiver(discoveryReceiver, filter)
             }
             isReceiverRegistered = true
+            Log.d(TAG, "BroadcastReceiver registered for ACTION_FOUND")
 
             bluetoothAdapter?.cancelDiscovery()
             val started = bluetoothAdapter?.startDiscovery() == true
             Log.d(TAG, "Discovery (auto) started: $started")
+            if (!started) {
+                Log.w(TAG, "startDiscovery() returned false! Check: BT on? Permissions granted? Location on?")
+                discoveryEventSink?.error("DISCOVERY_FAILED", "BluetoothAdapter.startDiscovery() returned false. Ensure BT is on, permissions granted, and Location enabled.", null)
+            }
         } catch (e: SecurityException) {
             Log.e(TAG, "Discovery permission denied: ${e.message}")
-            discoveryEventSink?.error("PERMISSION", "Bluetooth scan permission denied", null)
+            discoveryEventSink?.error("PERMISSION", "Bluetooth scan permission denied: ${e.message}", null)
         } catch (e: Exception) {
             Log.e(TAG, "Discovery error: ${e.message}")
             discoveryEventSink?.error("DISCOVERY_ERROR", e.message, null)

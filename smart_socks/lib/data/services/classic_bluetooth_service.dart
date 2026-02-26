@@ -71,13 +71,16 @@ class ClassicBluetoothService {
   Future<List<ClassicBtDevice>> getBondedDevices() async {
     try {
       final result = await _methodChannel.invokeMethod('getBondedDevices');
-      final list = (result as List).cast<Map>();
-      return list
-          .map((m) => ClassicBtDevice(
-                name: m['name']?.toString() ?? '',
-                address: m['address']?.toString() ?? '',
-              ))
-          .toList();
+      if (result == null) return [];
+      final rawList = result as List;
+      _log('getBondedDevices raw: ${rawList.length} items');
+      return rawList.map((item) {
+        final m = Map<String, dynamic>.from(item as Map);
+        return ClassicBtDevice(
+          name: m['name']?.toString() ?? '',
+          address: m['address']?.toString() ?? '',
+        );
+      }).toList();
     } catch (e) {
       _log('getBondedDevices error: $e');
       return [];
@@ -91,44 +94,80 @@ class ClassicBluetoothService {
   /// Start scanning for nearby Classic Bluetooth devices.
   /// Returns a broadcast stream of discovered [ClassicBtDevice] objects.
   /// The native EventChannel starts discovery when Dart subscribes (onListen).
-  Stream<ClassicBtDevice> startDiscovery() {
-    // Clean up any previous discovery stream
-    _discoveryRawSub?.cancel();
-    _discoveryController?.close();
-    _discoveryController = StreamController<ClassicBtDevice>.broadcast();
+  Future<Stream<ClassicBtDevice>> startDiscovery() async {
+    // Clean up any previous discovery stream properly
+    await _cleanupDiscovery();
 
-    // Subscribe to the native EventChannel.
-    // Native side automatically starts BT discovery in onListen.
-    _discoveryRawSub =
-        _discoveryEventChannel.receiveBroadcastStream().listen(
-      (event) {
-        final m = Map<String, dynamic>.from(event as Map);
-        _discoveryController?.add(ClassicBtDevice(
-          name: m['name']?.toString() ?? '',
-          address: m['address']?.toString() ?? '',
-        ));
-      },
-      onError: (e) {
-        _log('Discovery stream error: $e');
-        _discoveryController?.addError(e);
-      },
-      onDone: () {
-        _log('Discovery stream done');
-        _discoveryController?.close();
-      },
-    );
+    _discoveryController = StreamController<ClassicBtDevice>.broadcast();
+    _log('Discovery: subscribing to EventChannel...');
+
+    try {
+      // Subscribe to the native EventChannel.
+      // Native side automatically starts BT discovery in onListen.
+      _discoveryRawSub =
+          _discoveryEventChannel.receiveBroadcastStream().listen(
+        (event) {
+          try {
+            final m = Map<String, dynamic>.from(event as Map);
+            final device = ClassicBtDevice(
+              name: m['name']?.toString() ?? '',
+              address: m['address']?.toString() ?? '',
+            );
+            _log('Discovery: found ${device.name} (${device.address})');
+            if (_discoveryController != null &&
+                !_discoveryController!.isClosed) {
+              _discoveryController!.add(device);
+            }
+          } catch (e) {
+            _log('Discovery: error parsing event: $e (raw: $event)');
+          }
+        },
+        onError: (e) {
+          _log('Discovery stream error: $e');
+          if (_discoveryController != null &&
+              !_discoveryController!.isClosed) {
+            _discoveryController!.addError(e);
+          }
+        },
+        onDone: () {
+          _log('Discovery stream done (native finished)');
+          if (_discoveryController != null &&
+              !_discoveryController!.isClosed) {
+            _discoveryController!.close();
+          }
+        },
+      );
+      _log('Discovery: EventChannel subscription active');
+    } catch (e) {
+      _log('Discovery: FAILED to subscribe to EventChannel: $e');
+      _discoveryController?.close();
+      rethrow;
+    }
 
     return _discoveryController!.stream;
   }
 
+  /// Clean up discovery streams safely
+  Future<void> _cleanupDiscovery() async {
+    if (_discoveryRawSub != null) {
+      await _discoveryRawSub!.cancel();
+      _discoveryRawSub = null;
+      _log('Discovery: cancelled previous raw subscription');
+    }
+    if (_discoveryController != null) {
+      if (!_discoveryController!.isClosed) {
+        _discoveryController!.close();
+      }
+      _discoveryController = null;
+    }
+  }
+
   /// Stop discovery
   Future<void> stopDiscovery() async {
-    _discoveryRawSub?.cancel();
-    _discoveryRawSub = null;
-    _discoveryController?.close();
-    _discoveryController = null;
+    await _cleanupDiscovery();
     try {
       await _methodChannel.invokeMethod('stopDiscovery');
+      _log('stopDiscovery: native stopped');
     } catch (e) {
       _log('stopDiscovery error: $e');
     }

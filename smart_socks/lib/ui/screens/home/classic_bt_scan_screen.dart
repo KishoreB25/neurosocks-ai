@@ -49,22 +49,42 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
   // ============== Init ==============
 
   Future<void> _init() async {
-    // Check BT state
+    // 1. Request permissions FIRST (needed before any BT operations on Android 12+)
+    await _requestPermissions();
+
+    // 2. Now check BT state (requires BLUETOOTH_CONNECT on Android 12+)
     try {
       _btEnabled = await _btService.isEnabled();
       debugPrint('[ClassicBtScan] BT enabled: $_btEnabled');
     } catch (e) {
       debugPrint('[ClassicBtScan] Could not check BT state: $e');
-      _btEnabled = true; // Assume on
+      _btEnabled = true; // Assume on if check fails
     }
     if (mounted) setState(() {});
 
-    // Request permissions
-    await _requestPermissions();
+    // 3. Check location services (required for Classic BT discovery on Android)
+    if (Platform.isAndroid) {
+      try {
+        final locationOn =
+            await Permission.locationWhenInUse.serviceStatus.isEnabled;
+        debugPrint('[ClassicBtScan] Location services ON: $locationOn');
+        if (!locationOn && mounted) {
+          setState(() => _errorMessage =
+              'Location must be turned ON for Bluetooth scanning.\n'
+              'Please enable GPS/Location in your phone settings.');
+        }
+      } catch (e) {
+        debugPrint('[ClassicBtScan] Location check error: $e');
+      }
+    }
 
-    // Load paired + start discovery
+    // 4. Load paired devices + start discovery
     await _loadPairedDevices();
-    if (_btEnabled) await _startDiscovery();
+    if (_btEnabled) {
+      await _startDiscovery();
+    } else {
+      debugPrint('[ClassicBtScan] BT disabled — skipping discovery');
+    }
   }
 
   Future<void> _requestPermissions() async {
@@ -111,8 +131,15 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
 
     debugPrint('[ClassicBtScan] 🔍 Starting discovery...');
     try {
-      _discoverySub?.cancel();
-      _discoverySub = _btService.startDiscovery().listen(
+      // Cancel previous subscription before starting new one
+      await _discoverySub?.cancel();
+      _discoverySub = null;
+
+      // startDiscovery is async now — properly awaits cleanup
+      final stream = await _btService.startDiscovery();
+      debugPrint('[ClassicBtScan] Discovery stream obtained, subscribing...');
+
+      _discoverySub = stream.listen(
         (device) {
           // Skip already-paired or already-found devices
           final isPaired =
@@ -130,7 +157,8 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
           }
         },
         onDone: () {
-          debugPrint('[ClassicBtScan] Discovery done');
+          debugPrint(
+              '[ClassicBtScan] Discovery done (${_discoveredDevices.length} nearby found)');
           if (mounted) setState(() => _isScanning = false);
         },
         onError: (e) {
@@ -145,17 +173,19 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
       );
     } catch (e) {
       debugPrint('[ClassicBtScan] Start discovery failed: $e');
-      setState(() {
-        _isScanning = false;
-        _errorMessage = 'Discovery failed: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _isScanning = false;
+          _errorMessage = 'Discovery failed: $e';
+        });
+      }
     }
   }
 
   Future<void> _stopDiscovery() async {
-    await _btService.stopDiscovery();
     await _discoverySub?.cancel();
     _discoverySub = null;
+    await _btService.stopDiscovery();
     if (mounted) setState(() => _isScanning = false);
   }
 
@@ -295,6 +325,32 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // ── Status info ──
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+            color: Colors.blueGrey.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.info_outline, size: 16, color: Colors.blueGrey[400]),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'BT: ${_btEnabled ? "ON" : "OFF"}  •  '
+                  'Paired: ${_pairedDevices.length}  •  '
+                  'Nearby: ${_discoveredDevices.length}  •  '
+                  '${_isScanning ? "Scanning..." : "Idle"}',
+                  style: TextStyle(
+                      fontSize: 12, color: Colors.blueGrey[600]),
+                ),
+              ),
+            ],
+          ),
+        ),
+
         // Error banner
         if (_errorMessage != null) ...[
           Container(
@@ -315,27 +371,33 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
           const LinearProgressIndicator(),
           const SizedBox(height: 8),
           const Center(
-              child: Text('Scanning for devices...',
+              child: Text('Scanning for nearby devices...',
                   style: TextStyle(color: Colors.grey))),
           const SizedBox(height: 16),
         ],
 
-        // ---- Paired Devices ----
-        if (_pairedDevices.isNotEmpty) ...[
-          const Text('PAIRED DEVICES',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey,
-                  letterSpacing: 1)),
-          const SizedBox(height: 8),
+        // ---- Paired Devices (always show header) ----
+        Text('PAIRED DEVICES (${_pairedDevices.length})',
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Colors.grey,
+                letterSpacing: 1)),
+        const SizedBox(height: 8),
+        if (_pairedDevices.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Text('No paired Bluetooth devices on this phone.',
+                style: TextStyle(fontSize: 13, color: Colors.grey[400])),
+          )
+        else ...[
           ..._pairedDevices.map((d) => _buildDeviceTile(d, isPaired: true)),
-          const SizedBox(height: 24),
         ],
+        const SizedBox(height: 16),
 
-        // ---- Discovered Devices ----
-        const Text('NEARBY DEVICES',
-            style: TextStyle(
+        // ---- Discovered Devices (always show header) ----
+        Text('NEARBY DEVICES (${_discoveredDevices.length})',
+            style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
                 color: Colors.grey,
@@ -344,17 +406,19 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
         if (_discoveredDevices.isEmpty && !_isScanning)
           Center(
             child: Padding(
-              padding: const EdgeInsets.all(32),
+              padding: const EdgeInsets.all(24),
               child: Column(
                 children: [
                   Icon(Icons.bluetooth_searching,
                       size: 48, color: Colors.grey[400]),
                   const SizedBox(height: 12),
-                  Text('No devices found',
+                  Text('No nearby devices found',
                       style: TextStyle(color: Colors.grey[500])),
                   const SizedBox(height: 8),
                   Text(
-                    'Make sure your ESP32 is powered on\nand within range.',
+                    'Classic BT devices must be in discoverable mode.\n'
+                    'Make sure your ESP32 (NeuroSock) is powered on\n'
+                    'and within range, then tap Scan.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.grey[400], fontSize: 13),
                   ),
@@ -385,58 +449,90 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
                 color: AppColors.primary.withValues(alpha: 0.5), width: 2)
             : BorderSide.none,
       ),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: isNeuroSock
-              ? AppColors.primary.withValues(alpha: 0.15)
-              : Colors.grey.withValues(alpha: 0.15),
-          child: Icon(
-            isPaired ? Icons.bluetooth_connected : Icons.bluetooth,
-            color: isNeuroSock ? AppColors.primary : Colors.grey,
-          ),
-        ),
-        title: Row(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
           children: [
-            Expanded(
-              child: Text(name,
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
-            ),
-            if (isNeuroSock)
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text('ESP32',
-                    style: TextStyle(
-                        fontSize: 10,
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.bold)),
+            // Leading icon
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: isNeuroSock
+                  ? AppColors.primary.withValues(alpha: 0.15)
+                  : Colors.grey.withValues(alpha: 0.15),
+              child: Icon(
+                isPaired ? Icons.bluetooth_connected : Icons.bluetooth,
+                color: isNeuroSock ? AppColors.primary : Colors.grey,
+                size: 20,
               ),
+            ),
+            const SizedBox(width: 12),
+            // Title + subtitle
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          name,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 14),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (isNeuroSock) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text('ESP32',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    device.address,
+                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Trailing button
+            isThisConnecting
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : SizedBox(
+                    height: 34,
+                    child: ElevatedButton(
+                      onPressed: () => _connectToDevice(device),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                            isNeuroSock ? AppColors.primary : Colors.grey[700],
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 0),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('Connect',
+                          style:
+                              TextStyle(color: Colors.white, fontSize: 12)),
+                    ),
+                  ),
           ],
         ),
-        subtitle: Text(
-          device.address,
-          style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-        ),
-        trailing: isThisConnecting
-            ? const SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2))
-            : ElevatedButton(
-                onPressed: () => _connectToDevice(device),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      isNeuroSock ? AppColors.primary : Colors.grey[700],
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                ),
-                child: const Text('Connect',
-                    style: TextStyle(color: Colors.white, fontSize: 13)),
-              ),
       ),
     );
   }
