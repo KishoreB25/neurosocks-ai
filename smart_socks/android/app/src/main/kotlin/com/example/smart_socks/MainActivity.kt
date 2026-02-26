@@ -9,12 +9,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -29,8 +28,8 @@ class MainActivity : FlutterActivity() {
         private const val METHOD_CHANNEL = "com.neurosocks.app/classic_bt"
         private const val DATA_EVENT_CHANNEL = "com.neurosocks.app/classic_bt_data"
         private const val DISCOVERY_EVENT_CHANNEL = "com.neurosocks.app/classic_bt_discovery"
-        // Standard SPP UUID for serial port communication
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+        private const val REQUEST_ENABLE_BT = 42
     }
 
     private var bluetoothAdapter: BluetoothAdapter? = null
@@ -41,12 +40,10 @@ class MainActivity : FlutterActivity() {
 
     private var dataEventSink: EventChannel.EventSink? = null
     private var discoveryEventSink: EventChannel.EventSink? = null
+    private var enableBtResult: MethodChannel.Result? = null
+    private var isReceiverRegistered = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
-
-    // For Bluetooth enable request
-    private var enableBtResult: MethodChannel.Result? = null
-    private lateinit var enableBtLauncher: ActivityResultLauncher<Intent>
 
     // BroadcastReceiver for discovery
     private val discoveryReceiver = object : BroadcastReceiver() {
@@ -69,20 +66,6 @@ class MainActivity : FlutterActivity() {
                     Log.d(TAG, "Discovery finished")
                 }
             }
-        }
-    }
-
-    override fun onCreate(savedInstanceState: android.os.Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        // Register the BT-enable launcher BEFORE configureFlutterEngine
-        enableBtLauncher = registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            val enabled = result.resultCode == Activity.RESULT_OK
-            Log.d(TAG, "BT enable result: $enabled")
-            mainHandler.post { enableBtResult?.success(enabled) }
-            enableBtResult = null
         }
     }
 
@@ -133,8 +116,11 @@ class MainActivity : FlutterActivity() {
                                 result.success(true)
                             } else {
                                 enableBtResult = result
-                                val enableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                                enableBtLauncher.launch(enableIntent)
+                                @Suppress("DEPRECATION")
+                                startActivityForResult(
+                                    Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE),
+                                    REQUEST_ENABLE_BT
+                                )
                             }
                         }
                         "openBluetoothSettings" -> {
@@ -166,10 +152,14 @@ class MainActivity : FlutterActivity() {
             })
 
         // ---- Discovery EventChannel ----
+        // When Dart subscribes, native automatically starts scanning.
+        // When Dart cancels subscription, native stops scanning.
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, DISCOVERY_EVENT_CHANNEL)
             .setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                     discoveryEventSink = events
+                    // Start discovery automatically when Dart subscribes
+                    startBtDiscoveryAuto()
                 }
                 override fun onCancel(arguments: Any?) {
                     stopBtDiscovery()
@@ -178,32 +168,67 @@ class MainActivity : FlutterActivity() {
             })
     }
 
+    // ====== BT Enable Result ======
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_ENABLE_BT) {
+            val enabled = resultCode == Activity.RESULT_OK
+            Log.d(TAG, "BT enable result: $enabled")
+            enableBtResult?.success(enabled)
+            enableBtResult = null
+        }
+    }
+
     // ====== Discovery ======
 
-    private fun startBtDiscovery(result: MethodChannel.Result) {
+    /// Called from EventChannel onListen — no MethodChannel.Result needed
+    private fun startBtDiscoveryAuto() {
         try {
-            // Register receiver
             val filter = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_FOUND)
                 addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             }
-            registerReceiver(discoveryReceiver, filter)
+            if (isReceiverRegistered) {
+                try { unregisterReceiver(discoveryReceiver) } catch (_: Exception) {}
+            }
+            // Android 14+ (API 33) requires RECEIVER_EXPORTED flag
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(discoveryReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(discoveryReceiver, filter)
+            }
+            isReceiverRegistered = true
 
-            // Cancel existing discovery
             bluetoothAdapter?.cancelDiscovery()
             val started = bluetoothAdapter?.startDiscovery() == true
-            Log.d(TAG, "Discovery started: $started")
-            result.success(started)
+            Log.d(TAG, "Discovery (auto) started: $started")
         } catch (e: SecurityException) {
-            result.error("PERMISSION", "Bluetooth scan permission denied", null)
+            Log.e(TAG, "Discovery permission denied: ${e.message}")
+            discoveryEventSink?.error("PERMISSION", "Bluetooth scan permission denied", null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Discovery error: ${e.message}")
+            discoveryEventSink?.error("DISCOVERY_ERROR", e.message, null)
         }
+    }
+
+    /// Called from MethodChannel "startDiscovery" — kept as no-op, discovery
+    /// is handled via EventChannel onListen which calls startBtDiscoveryAuto()
+    private fun startBtDiscovery(result: MethodChannel.Result) {
+        result.success(true)
     }
 
     private fun stopBtDiscovery() {
         try {
             bluetoothAdapter?.cancelDiscovery()
-            unregisterReceiver(discoveryReceiver)
-        } catch (_: Exception) { }
+        } catch (_: Exception) {}
+        try {
+            if (isReceiverRegistered) {
+                unregisterReceiver(discoveryReceiver)
+                isReceiverRegistered = false
+            }
+        } catch (_: Exception) {}
     }
 
     // ====== Connection ======
@@ -211,7 +236,6 @@ class MainActivity : FlutterActivity() {
     private fun connectToDevice(address: String, result: MethodChannel.Result) {
         Thread {
             try {
-                // Cancel discovery before connecting
                 try { bluetoothAdapter?.cancelDiscovery() } catch (_: Exception) {}
 
                 val device = bluetoothAdapter?.getRemoteDevice(address)
@@ -265,7 +289,6 @@ class MainActivity : FlutterActivity() {
                     val bytesRead = stream.read(buffer)
                     if (bytesRead > 0) {
                         val data = buffer.copyOf(bytesRead)
-                        // Send raw bytes as List<Int> to Dart
                         mainHandler.post {
                             dataEventSink?.success(data.map { it.toInt() and 0xFF })
                         }
@@ -294,7 +317,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         disconnectDevice()
-        try { unregisterReceiver(discoveryReceiver) } catch (_: Exception) {}
+        stopBtDiscovery()
         super.onDestroy()
     }
 }
