@@ -21,7 +21,6 @@ class ClassicBtScanScreen extends StatefulWidget {
   State<ClassicBtScanScreen> createState() => _ClassicBtScanScreenState();
 }
 
-
 class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
   final ClassicBluetoothService _btService = ClassicBluetoothService();
 
