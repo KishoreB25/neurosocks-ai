@@ -31,6 +31,7 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
   String? _connectingAddress;
   String? _errorMessage;
   bool _btEnabled = true;
+  bool _locationEnabled = true;
   StreamSubscription<ClassicBtDevice>? _discoverySub;
 
   @override
@@ -60,28 +61,28 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
       debugPrint('[ClassicBtScan] Could not check BT state: $e');
       _btEnabled = true; // Assume on if check fails
     }
-    if (mounted) setState(() {});
 
-    // 3. Check location services (required for Classic BT discovery on Android)
+    // 3. Check Location Services (required for Classic BT discovery on Android)
     if (Platform.isAndroid) {
       try {
-        final locationOn =
-            await Permission.locationWhenInUse.serviceStatus.isEnabled;
-        debugPrint('[ClassicBtScan] Location services ON: $locationOn');
-        if (!locationOn && mounted) {
-          setState(() => _errorMessage =
-              'Location must be turned ON for Bluetooth scanning.\n'
-              'Please enable GPS/Location in your phone settings.');
-        }
+        _locationEnabled = await _btService.isLocationEnabled();
+        debugPrint('[ClassicBtScan] Location services ON: $_locationEnabled');
       } catch (e) {
         debugPrint('[ClassicBtScan] Location check error: $e');
+        _locationEnabled = true; // Assume on if check fails
       }
     }
 
-    // 4. Load paired devices + start discovery
+    if (mounted) setState(() {});
+
+    // 4. Load paired devices (always, regardless of location/scan status)
     await _loadPairedDevices();
-    if (_btEnabled) {
+
+    // 5. Start discovery only if BT + Location are on
+    if (_btEnabled && _locationEnabled) {
       await _startDiscovery();
+    } else if (!_locationEnabled) {
+      debugPrint('[ClassicBtScan] Location OFF — skipping discovery');
     } else {
       debugPrint('[ClassicBtScan] BT disabled — skipping discovery');
     }
@@ -123,19 +124,35 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
 
   Future<void> _startDiscovery() async {
     if (_isScanning) return;
+
+    // Re-check location before every scan attempt
+    if (Platform.isAndroid) {
+      try {
+        _locationEnabled = await _btService.isLocationEnabled();
+      } catch (_) {}
+      if (!_locationEnabled) {
+        if (mounted) {
+          setState(() {
+            _isScanning = false;
+            // Don't set _errorMessage — the location banner handles it
+          });
+        }
+        return;
+      }
+    }
+
     setState(() {
       _isScanning = true;
       _discoveredDevices.clear();
       _errorMessage = null;
     });
 
-    debugPrint('[ClassicBtScan] 🔍 Starting discovery...');
+    debugPrint('[ClassicBtScan] Starting discovery...');
     try {
       // Cancel previous subscription before starting new one
       await _discoverySub?.cancel();
       _discoverySub = null;
 
-      // startDiscovery is async now — properly awaits cleanup
       final stream = await _btService.startDiscovery();
       debugPrint('[ClassicBtScan] Discovery stream obtained, subscribing...');
 
@@ -164,10 +181,24 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
         onError: (e) {
           debugPrint('[ClassicBtScan] Discovery error: $e');
           if (mounted) {
-            setState(() {
-              _isScanning = false;
-              _errorMessage = 'Discovery error: $e';
-            });
+            final errStr = e.toString();
+            // Handle specific known errors with user-friendly messages
+            if (errStr.contains('LOCATION_OFF')) {
+              setState(() {
+                _isScanning = false;
+                _locationEnabled = false;
+              });
+            } else if (errStr.contains('BT_OFF')) {
+              setState(() {
+                _isScanning = false;
+                _btEnabled = false;
+              });
+            } else {
+              setState(() {
+                _isScanning = false;
+                _errorMessage = 'Scan error: $e';
+              });
+            }
           }
         },
       );
@@ -269,7 +300,7 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
         ],
       ),
       body: !_btEnabled ? _buildBtOffView() : _buildDeviceList(),
-      floatingActionButton: _btEnabled && !_isScanning
+      floatingActionButton: _btEnabled && !_isScanning && _locationEnabled
           ? FloatingActionButton.extended(
               onPressed: _startDiscovery,
               icon: const Icon(Icons.search),
@@ -325,36 +356,77 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // ── Status info ──
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          margin: const EdgeInsets.only(bottom: 12),
-          decoration: BoxDecoration(
-            color: Colors.blueGrey.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.info_outline, size: 16, color: Colors.blueGrey[400]),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'BT: ${_btEnabled ? "ON" : "OFF"}  •  '
-                  'Paired: ${_pairedDevices.length}  •  '
-                  'Nearby: ${_discoveredDevices.length}  •  '
-                  '${_isScanning ? "Scanning..." : "Idle"}',
-                  style: TextStyle(
-                      fontSize: 12, color: Colors.blueGrey[600]),
+        // ── Location OFF banner ──
+        if (!_locationEnabled) ...[
+          Container(
+            padding: const EdgeInsets.all(14),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.12),
+              border: Border.all(color: Colors.orange),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.location_off, color: Colors.orange, size: 20),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Location Services Required',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.orange,
+                            fontSize: 14),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                const SizedBox(height: 6),
+                const Text(
+                  'Android requires Location (GPS) to be turned ON '
+                  'for Bluetooth device scanning.\n'
+                  'Your paired devices are shown below — tap one to connect directly.',
+                  style: TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                        await _btService.openLocationSettings();
+                        // Wait for user to come back, then re-check
+                        await Future.delayed(const Duration(seconds: 2));
+                        if (mounted) _init();
+                      },
+                      icon: const Icon(Icons.settings, size: 16),
+                      label: const Text('Open Location Settings'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: _init,
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ),
+        ],
 
-        // Error banner
+        // ── Error banner (non-location errors) ──
         if (_errorMessage != null) ...[
           Container(
             padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(bottom: 12),
             decoration: BoxDecoration(
               color: Colors.red[50],
               border: Border.all(color: Colors.red),
@@ -363,10 +435,9 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
             child: Text(_errorMessage!,
                 style: TextStyle(color: Colors.red[800])),
           ),
-          const SizedBox(height: 16),
         ],
 
-        // Scanning indicator
+        // ── Scanning indicator ──
         if (_isScanning) ...[
           const LinearProgressIndicator(),
           const SizedBox(height: 8),
@@ -376,7 +447,7 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
           const SizedBox(height: 16),
         ],
 
-        // ---- Paired Devices (always show header) ----
+        // ── Paired Devices ──
         Text('PAIRED DEVICES (${_pairedDevices.length})',
             style: const TextStyle(
                 fontSize: 12,
@@ -393,41 +464,42 @@ class _ClassicBtScanScreenState extends State<ClassicBtScanScreen> {
         else ...[
           ..._pairedDevices.map((d) => _buildDeviceTile(d, isPaired: true)),
         ],
-        const SizedBox(height: 16),
+        const SizedBox(height: 20),
 
-        // ---- Discovered Devices (always show header) ----
-        Text('NEARBY DEVICES (${_discoveredDevices.length})',
-            style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                color: Colors.grey,
-                letterSpacing: 1)),
-        const SizedBox(height: 8),
-        if (_discoveredDevices.isEmpty && !_isScanning)
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  Icon(Icons.bluetooth_searching,
-                      size: 48, color: Colors.grey[400]),
-                  const SizedBox(height: 12),
-                  Text('No nearby devices found',
-                      style: TextStyle(color: Colors.grey[500])),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Classic BT devices must be in discoverable mode.\n'
-                    'Make sure your ESP32 (NeuroSock) is powered on\n'
-                    'and within range, then tap Scan.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey[400], fontSize: 13),
-                  ),
-                ],
+        // ── Nearby Devices (only if location is on) ──
+        if (_locationEnabled) ...[
+          Text('NEARBY DEVICES (${_discoveredDevices.length})',
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey,
+                  letterSpacing: 1)),
+          const SizedBox(height: 8),
+          if (_discoveredDevices.isEmpty && !_isScanning)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    Icon(Icons.bluetooth_searching,
+                        size: 48, color: Colors.grey[400]),
+                    const SizedBox(height: 12),
+                    Text('No nearby devices found',
+                        style: TextStyle(color: Colors.grey[500])),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Make sure your ESP32 (NeuroSock) is powered on\n'
+                      'and within range, then tap Scan.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          )
-        else
-          ..._discoveredDevices.map((d) => _buildDeviceTile(d)),
+            )
+          else
+            ..._discoveredDevices.map((d) => _buildDeviceTile(d)),
+        ],
       ],
     );
   }

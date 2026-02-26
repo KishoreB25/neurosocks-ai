@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -149,6 +150,15 @@ class MainActivity : FlutterActivity() {
                             startActivity(intent)
                             result.success(null)
                         }
+                        "isLocationEnabled" -> {
+                            result.success(isLocationServicesOn())
+                        }
+                        "openLocationSettings" -> {
+                            val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            startActivity(intent)
+                            result.success(null)
+                        }
                         else -> result.notImplemented()
                     }
                 } catch (e: SecurityException) {
@@ -203,10 +213,43 @@ class MainActivity : FlutterActivity() {
 
     // ====== Discovery ======
 
+    /// Check if Location Services (GPS) are enabled at system level.
+    /// Classic BT discovery absolutely requires this on Android 6+.
+    private fun isLocationServicesOn(): Boolean {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                lm.isLocationEnabled
+            } else {
+                @Suppress("DEPRECATION")
+                (lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                 lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
+            }
+        } catch (_: Exception) { false }
+    }
+
     /// Called from EventChannel onListen — no MethodChannel.Result needed
     private fun startBtDiscoveryAuto() {
         try {
-            Log.d(TAG, "startBtDiscoveryAuto: adapter=${bluetoothAdapter != null}, enabled=${bluetoothAdapter?.isEnabled}")
+            val adapter = bluetoothAdapter
+            val enabled = adapter?.isEnabled == true
+            val locationOn = isLocationServicesOn()
+            Log.d(TAG, "startBtDiscoveryAuto: adapter=${adapter != null}, enabled=$enabled, locationOn=$locationOn")
+
+            // Pre-flight: BT must be enabled
+            if (!enabled) {
+                Log.w(TAG, "BT adapter is off — cannot start discovery")
+                discoveryEventSink?.error("BT_OFF", "Bluetooth is turned off.", null)
+                return
+            }
+            // Pre-flight: Location must be on for Classic BT discovery
+            if (!locationOn) {
+                Log.w(TAG, "Location services OFF — Classic BT discovery requires it")
+                discoveryEventSink?.error("LOCATION_OFF",
+                    "Location Services (GPS) must be turned ON for Bluetooth scanning. "
+                    + "Go to Settings → Location and enable it.", null)
+                return
+            }
 
             val filter = IntentFilter().apply {
                 addAction(BluetoothDevice.ACTION_FOUND)
@@ -214,6 +257,7 @@ class MainActivity : FlutterActivity() {
             }
             if (isReceiverRegistered) {
                 try { unregisterReceiver(discoveryReceiver) } catch (_: Exception) {}
+                isReceiverRegistered = false
             }
             // Android 14+ (API 33) requires RECEIVER_EXPORTED flag
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -224,12 +268,14 @@ class MainActivity : FlutterActivity() {
             isReceiverRegistered = true
             Log.d(TAG, "BroadcastReceiver registered for ACTION_FOUND")
 
-            bluetoothAdapter?.cancelDiscovery()
-            val started = bluetoothAdapter?.startDiscovery() == true
-            Log.d(TAG, "Discovery (auto) started: $started")
+            adapter?.cancelDiscovery()
+            val started = adapter?.startDiscovery() == true
+            Log.d(TAG, "Discovery started: $started")
             if (!started) {
-                Log.w(TAG, "startDiscovery() returned false! Check: BT on? Permissions granted? Location on?")
-                discoveryEventSink?.error("DISCOVERY_FAILED", "BluetoothAdapter.startDiscovery() returned false. Ensure BT is on, permissions granted, and Location enabled.", null)
+                Log.w(TAG, "startDiscovery() returned false despite BT on + location on")
+                // Don't send error — just send endOfStream so Dart knows discovery ended
+                // The user can retry with the Scan button
+                discoveryEventSink?.endOfStream()
             }
         } catch (e: SecurityException) {
             Log.e(TAG, "Discovery permission denied: ${e.message}")

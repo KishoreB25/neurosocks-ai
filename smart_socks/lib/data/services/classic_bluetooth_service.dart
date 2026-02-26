@@ -65,6 +65,26 @@ class ClassicBluetoothService {
     }
   }
 
+  /// Check if Location Services (GPS) are enabled.
+  /// Classic BT discovery requires this to be ON on Android.
+  Future<bool> isLocationEnabled() async {
+    try {
+      return await _methodChannel.invokeMethod<bool>('isLocationEnabled') ?? false;
+    } catch (e) {
+      _log('isLocationEnabled error: $e');
+      return true; // Assume on if check fails
+    }
+  }
+
+  /// Open system Location Settings
+  Future<void> openLocationSettings() async {
+    try {
+      await _methodChannel.invokeMethod('openLocationSettings');
+    } catch (e) {
+      _log('openLocationSettings error: $e');
+    }
+  }
+
   // ============== Discovery ==============
 
   /// Get list of paired/bonded devices
@@ -94,6 +114,7 @@ class ClassicBluetoothService {
   /// Start scanning for nearby Classic Bluetooth devices.
   /// Returns a broadcast stream of discovered [ClassicBtDevice] objects.
   /// The native EventChannel starts discovery when Dart subscribes (onListen).
+  /// If location is off, the stream will emit an error with code 'LOCATION_OFF'.
   Future<Stream<ClassicBtDevice>> startDiscovery() async {
     // Clean up any previous discovery stream properly
     await _cleanupDiscovery();
@@ -127,6 +148,7 @@ class ClassicBluetoothService {
           if (_discoveryController != null &&
               !_discoveryController!.isClosed) {
             _discoveryController!.addError(e);
+            _discoveryController!.close();
           }
         },
         onDone: () {
@@ -140,8 +162,11 @@ class ClassicBluetoothService {
       _log('Discovery: EventChannel subscription active');
     } catch (e) {
       _log('Discovery: FAILED to subscribe to EventChannel: $e');
-      _discoveryController?.close();
-      rethrow;
+      if (_discoveryController != null && !_discoveryController!.isClosed) {
+        _discoveryController!.addError(e);
+        _discoveryController!.close();
+      }
+      // Don't rethrow — return the stream so the UI can handle it
     }
 
     return _discoveryController!.stream;
