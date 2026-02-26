@@ -5,7 +5,7 @@ import '../../../core/constants/app_strings.dart';
 import '../../../data/models/user_profile.dart';
 import '../../../providers/user_provider.dart';
 import '../../../providers/sensor_provider.dart';
-import 'device_scan_screen.dart';
+import 'classic_bt_scan_screen.dart';
 
 /// Settings and profile screen
 class SettingsScreen extends StatelessWidget {
@@ -245,7 +245,7 @@ class SettingsScreen extends StatelessWidget {
                       // Navigate to device scan screen for Bluetooth connection
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (context) => const DeviceScanScreen(),
+                          builder: (context) => const ClassicBtScanScreen(),
                         ),
                       );
                     },

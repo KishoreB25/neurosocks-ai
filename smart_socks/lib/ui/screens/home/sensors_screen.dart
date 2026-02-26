@@ -76,16 +76,15 @@ class _SensorsScreenState extends State<SensorsScreen>
           _buildModeToggle(),
           const SizedBox(height: 20),
 
-          // Dual foot heatmap
-          DualFootHeatmap(
-            leftFoot: provider.leftFootData,
-            rightFoot: provider.rightFootData,
+          // Single foot heatmap (one ESP32, one leg)
+          SingleFootHeatmap(
+            footData: provider.footData,
             mode: _heatmapMode,
-            onZoneTap: (zone, side) {
+            onZoneTap: (zone) {
               setState(() {
                 _selectedZone = zone;
               });
-              _showZoneDetails(provider, zone, side);
+              _showZoneDetails(provider, zone, provider.footData?.side ?? FootSide.left);
             },
           ),
           const SizedBox(height: 20),
@@ -230,9 +229,7 @@ class _SensorsScreenState extends State<SensorsScreen>
   }
 
   void _showZoneDetails(SensorProvider provider, FootZone zone, FootSide side) {
-    final footData = side == FootSide.left
-        ? provider.leftFootData
-        : provider.rightFootData;
+    final footData = provider.footData;
 
     if (footData == null) return;
 
@@ -255,7 +252,7 @@ class _SensorsScreenState extends State<SensorsScreen>
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  '${side == FootSide.left ? "Left" : "Right"} ${zone.name}',
+                  '${zone.name} Zone',
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
