@@ -348,7 +348,9 @@ class ClassicBluetoothService {
       final temperatures = <double>[];
       for (int i = 0; i < 4; i++) {
         final raw = packet[i];
-        final temp = 25.0 + (raw - 128) / 2.0;
+        var temp = 25.0 + (raw - 128) / 2.0;
+        // Clamp negative temps to 0 (means no sensor connected)
+        if (temp < 0) temp = 0;
         temperatures.add(temp);
       }
 
@@ -363,8 +365,10 @@ class ClassicBluetoothService {
       // ---- SpO2 (Bytes 8-9) ----
       final spO2Raw = (packet[8] << 8) | packet[9];
       double spO2 = spO2Raw / 100.0;
+      // Clamp to 0-100% and treat 0 as disconnected
       if (spO2 > 100.0) spO2 = 100.0;
       if (spO2 < 0.0) spO2 = 0.0;
+      _log('SpO2 raw: $spO2Raw → ${spO2.toStringAsFixed(1)}%');
 
       // ---- Heart Rate (Bytes 10-11) ----
       int heartRate = (packet[10] << 8) | packet[11];
