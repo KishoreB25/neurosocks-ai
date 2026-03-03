@@ -479,19 +479,13 @@ class RealBleService {
       // Parse Battery Level (Byte 15)
       _batteryLevel = packet[15].clamp(0, 100);
 
-      // Generate dummy IMU data
-      final accData = _generateDummyAccelerometerData(stepCount);
-      final gyroData = _generateDummyGyroscopeData(stepCount);
-
-      // Create SensorReading
+      // Create SensorReading (no accel/gyro - not transmitted by ESP32 BLE)
       final reading = SensorReading(
         timestamp: DateTime.now(),
         temperatures: temperatures,
         pressures: pressures,
         spO2: spO2,
         heartRate: heartRate,
-        accelerometer: accData,
-        gyroscope: gyroData,
         stepCount: stepCount,
         batteryLevel: _batteryLevel,
         activityType: activityType,
@@ -523,22 +517,6 @@ class RealBleService {
       default:
         return ActivityType.unknown;
     }
-  }
-
-  /// Generate dummy accelerometer data based on activity
-  AccelerometerData _generateDummyAccelerometerData(int stepCount) {
-    if (stepCount > 0) {
-      return AccelerometerData(x: 0.5, y: 0.3, z: 9.8);
-    }
-    return AccelerometerData(x: 0.0, y: 0.0, z: 9.8);
-  }
-
-  /// Generate dummy gyroscope data based on activity
-  GyroscopeData _generateDummyGyroscopeData(int stepCount) {
-    if (stepCount > 0) {
-      return GyroscopeData(x: 5.0, y: 3.0, z: 2.0);
-    }
-    return GyroscopeData(x: 0.5, y: 0.5, z: 0.5);
   }
 
   /// Print debug message
