@@ -10,7 +10,6 @@ import '../data/models/risk_score.dart';
 import '../data/services/real_ble_service.dart';
 import '../data/services/classic_bluetooth_service.dart';
 import '../data/services/storage_service.dart';
-import '../data/services/foot_ulcer_prediction_service.dart';
 import '../data/services/firebase/firebase_firestore_service.dart';
 import 'risk_provider.dart';
 
@@ -335,7 +334,7 @@ class SensorProvider extends ChangeNotifier {
     // Save to Firestore if user is logged in
     if (_currentUserId != null) {
       unawaited(_saveReadingToFirestore(reading));
-      unawaited(_savePredictionToFirestore(reading));
+      // Predictions are now saved by RiskProvider (ML-based) via processReading()
     } else {
       debugPrint('⚠️ Cannot save to Firestore: userId is null');
     }
@@ -361,42 +360,6 @@ class SensorProvider extends ChangeNotifier {
     }
   }
 
-  /// Save foot ulcer prediction to Firestore
-  Future<void> _savePredictionToFirestore(SensorReading reading) async {
-    if (_currentUserId == null) {
-      debugPrint('❌ Cannot save prediction: userId is null');
-      return;
-    }
-
-    try {
-      // Generate prediction
-      final prediction = FootUlcerPredictionService.predictRisk(
-        reading,
-        historicalReadings: _recentReadings,
-      );
-
-      // Convert to risk score for storage
-      final riskScore = RiskScore(
-        timestamp: prediction.timestamp,
-        overallScore: prediction.riskScore.toInt(),
-        riskLevel: _mapUlcerRiskToRiskLevel(prediction.level),
-        pressureRisk: reading.maxPressure.toInt(),
-        temperatureRisk: reading.maxTemperature.toInt(),
-        circulationRisk: 0,
-        gaitRisk: 0,
-        factors: prediction.riskFactors,
-        recommendations: [prediction.recommendation],
-      );
-
-      await _firestoreService.saveRiskScore(
-        userId: _currentUserId!,
-        riskScore: riskScore,
-      );
-      debugPrint('💾 Risk prediction saved to Firestore');
-    } catch (e) {
-      debugPrint('❌ Prediction save error: $e');
-    }
-  }
 
   /// Load recent data from Firestore (for history/trends only, NOT as current reading)
   /// Current reading is ONLY populated by live Bluetooth data
@@ -553,20 +516,6 @@ class SensorProvider extends ChangeNotifier {
   }
 
   // ============== Cleanup ==============
-
-  /// Map UlcerRiskLevel to RiskLevel enum
-  RiskLevel _mapUlcerRiskToRiskLevel(dynamic level) {
-    final levelStr = level.toString().toLowerCase();
-    if (levelStr.contains('low')) {
-      return RiskLevel.low;
-    } else if (levelStr.contains('moderate')) {
-      return RiskLevel.moderate;
-    } else if (levelStr.contains('high')) {
-      return RiskLevel.high;
-    } else {
-      return RiskLevel.critical;
-    }
-  }
 
   /// Clear error message
   void clearError() {

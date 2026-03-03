@@ -18,7 +18,7 @@ class AlertService {
 
   // Cooldown tracking to prevent alert spam
   final Map<String, DateTime> _alertCooldowns = {};
-  static const Duration _cooldownDuration = Duration(minutes: 5);
+  static const Duration _cooldownDuration = Duration(minutes: 15);
 
   // Stream for new alerts
   final StreamController<Alert> _alertStreamController =
@@ -88,98 +88,128 @@ class AlertService {
     return newAlerts;
   }
 
-  /// Check temperature for each zone
+  /// Check temperature for each zone (consolidated - one alert per type)
   List<Alert> _checkTemperatureAlerts(SensorReading reading) {
     final alerts = <Alert>[];
 
+    // Find the hottest zone
+    double maxTemp = 0;
+    int hotZoneIndex = 0;
     for (int i = 0; i < reading.temperatures.length; i++) {
-      final temp = reading.temperatures[i];
-      final zoneName = SensorConstants.getZoneName(i);
-      final cooldownKey = 'temp_high_$i';
-
-      // Check for high temperature
-      if (temp > SensorConstants.tempWarningHigh) {
-        if (_canCreateAlert(cooldownKey)) {
-          alerts.add(Alert.highTemperature(
-            zone: zoneName,
-            temperature: temp,
-            threshold: SensorConstants.tempWarningHigh,
-          ));
-          _setCooldown(cooldownKey);
-        }
+      if (reading.temperatures[i] > maxTemp) {
+        maxTemp = reading.temperatures[i];
+        hotZoneIndex = i;
       }
+    }
 
-      // Check for low temperature (circulation issue)
-      final coldCooldownKey = 'temp_low_$i';
-      if (temp < SensorConstants.tempWarningLow && temp > 0) {
-        if (_canCreateAlert(coldCooldownKey)) {
-          alerts.add(Alert.create(
-            type: AlertType.temperature,
-            severity: temp < SensorConstants.tempCriticalLow
-                ? AlertSeverity.critical
-                : AlertSeverity.warning,
-            title: 'Low Temperature',
-            message: '$zoneName area showing low temperature '
-                '(${temp.toStringAsFixed(1)}°C). '
-                'This may indicate poor circulation.',
-            affectedZone: zoneName,
-            actualValue: temp,
-            threshold: SensorConstants.tempWarningLow,
-            action: 'Warm your feet and check circulation',
-          ));
-          _setCooldown(coldCooldownKey);
-        }
+    // Single high temperature alert (for the worst zone)
+    const cooldownKey = 'temp_high';
+    if (maxTemp > SensorConstants.tempWarningHigh) {
+      if (_canCreateAlert(cooldownKey)) {
+        final zoneName = SensorConstants.getZoneName(hotZoneIndex);
+        alerts.add(Alert.highTemperature(
+          zone: zoneName,
+          temperature: maxTemp,
+          threshold: SensorConstants.tempWarningHigh,
+        ));
+        _setCooldown(cooldownKey);
+      }
+    }
+
+    // Find the coldest zone (above 0)
+    double minTemp = double.infinity;
+    int coldZoneIndex = 0;
+    for (int i = 0; i < reading.temperatures.length; i++) {
+      if (reading.temperatures[i] > 0 && reading.temperatures[i] < minTemp) {
+        minTemp = reading.temperatures[i];
+        coldZoneIndex = i;
+      }
+    }
+
+    // Single low temperature alert (for the worst zone)
+    const coldCooldownKey = 'temp_low';
+    if (minTemp < SensorConstants.tempWarningLow && minTemp > 0) {
+      if (_canCreateAlert(coldCooldownKey)) {
+        final zoneName = SensorConstants.getZoneName(coldZoneIndex);
+        alerts.add(Alert.create(
+          type: AlertType.temperature,
+          severity: minTemp < SensorConstants.tempCriticalLow
+              ? AlertSeverity.critical
+              : AlertSeverity.warning,
+          title: 'Low Temperature',
+          message: '$zoneName area showing low temperature '
+              '(${minTemp.toStringAsFixed(1)}°C). '
+              'This may indicate poor circulation.',
+          affectedZone: zoneName,
+          actualValue: minTemp,
+          threshold: SensorConstants.tempWarningLow,
+          action: 'Warm your feet and check circulation',
+        ));
+        _setCooldown(coldCooldownKey);
       }
     }
 
     return alerts;
   }
 
-  /// Check pressure for each zone
+  /// Check pressure for each zone (consolidated - one alert per type)
   List<Alert> _checkPressureAlerts(SensorReading reading) {
     final alerts = <Alert>[];
 
+    // Find the highest pressure zone
+    double maxPressure = 0;
+    int maxZoneIndex = 0;
     for (int i = 0; i < reading.pressures.length; i++) {
-      final pressure = reading.pressures[i];
-      final zoneName = SensorConstants.getZoneName(i);
-      final cooldownKey = 'pressure_$i';
-
-      if (pressure > SensorConstants.pressureWarning) {
-        if (_canCreateAlert(cooldownKey)) {
-          alerts.add(Alert.highPressure(
-            zone: zoneName,
-            pressure: pressure,
-            threshold: SensorConstants.pressureWarning,
-          ));
-          _setCooldown(cooldownKey);
-        }
+      if (reading.pressures[i] > maxPressure) {
+        maxPressure = reading.pressures[i];
+        maxZoneIndex = i;
       }
     }
 
-    // Check for pressure spike
+    // Single high pressure alert (for the worst zone)
+    const cooldownKey = 'pressure_high';
+    if (maxPressure > SensorConstants.pressureWarning) {
+      if (_canCreateAlert(cooldownKey)) {
+        final zoneName = SensorConstants.getZoneName(maxZoneIndex);
+        alerts.add(Alert.highPressure(
+          zone: zoneName,
+          pressure: maxPressure,
+          threshold: SensorConstants.pressureWarning,
+        ));
+        _setCooldown(cooldownKey);
+      }
+    }
+
+    // Check for pressure spike (highest spike across all zones)
     if (_previousReading != null) {
+      double maxSpike = 0;
+      int spikeZoneIndex = 0;
       for (int i = 0; i < reading.pressures.length; i++) {
         if (i < _previousReading!.pressures.length) {
           final diff = reading.pressures[i] - _previousReading!.pressures[i];
-          final zoneName = SensorConstants.getZoneName(i);
-          final cooldownKey = 'pressure_spike_$i';
-
-          if (diff > SensorConstants.pressureSpikeThreshold) {
-            if (_canCreateAlert(cooldownKey)) {
-              alerts.add(Alert.create(
-                type: AlertType.pressure,
-                severity: AlertSeverity.warning,
-                title: 'Pressure Spike',
-                message: 'Sudden pressure increase at $zoneName '
-                    '(+${diff.toStringAsFixed(1)} kPa).',
-                affectedZone: zoneName,
-                actualValue: reading.pressures[i],
-                threshold: SensorConstants.pressureSpikeThreshold,
-                action: 'Check foot position and redistribute weight',
-              ));
-              _setCooldown(cooldownKey);
-            }
+          if (diff > maxSpike) {
+            maxSpike = diff;
+            spikeZoneIndex = i;
           }
+        }
+      }
+
+      const spikeCooldownKey = 'pressure_spike';
+      if (maxSpike > SensorConstants.pressureSpikeThreshold) {
+        if (_canCreateAlert(spikeCooldownKey)) {
+          final zoneName = SensorConstants.getZoneName(spikeZoneIndex);
+          alerts.add(Alert.create(
+            type: AlertType.pressure,
+            severity: AlertSeverity.warning,
+            title: 'Pressure Spike',
+            message: 'Sudden pressure increase at $zoneName '
+                '(+${maxSpike.toStringAsFixed(1)} kPa).',
+            affectedZone: zoneName,
+            actualValue: reading.pressures[spikeZoneIndex],
+            threshold: SensorConstants.pressureSpikeThreshold,
+            action: 'Check foot position and redistribute weight',
+          ));
+          _setCooldown(spikeCooldownKey);
         }
       }
     }
