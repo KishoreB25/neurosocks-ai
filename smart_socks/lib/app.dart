@@ -17,7 +17,6 @@ import 'ui/screens/home/sensors_screen.dart';
 import 'ui/screens/home/alerts_screen.dart';
 import 'ui/screens/home/settings_screen.dart';
 
-
 // Use Flutter's ThemeMode for MaterialApp
 import 'package:flutter/material.dart' as flutter show ThemeMode;
 
