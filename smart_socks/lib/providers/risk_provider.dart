@@ -1,4 +1,5 @@
 // Processes readings → risk scores, manages alerts, daily summaries
+// ✅ Phase 3: ML Integration - Uses ML predictions with threshold fallback
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
@@ -24,11 +25,18 @@ class RiskProvider extends ChangeNotifier {
     
     // Load initial data
     _loadInitialData();
+    
+    // Initialize ML model asynchronously
+    _initializeML();
   }
   
   final RiskCalculator _riskCalculator = RiskCalculator();
   final AlertService _alertService = AlertService();
   final StorageService _storageService = StorageService();
+
+  // ML status tracking
+  bool _mlInitialized = false;
+  String _mlStatus = 'Initializing...';
 
   // Current state
   RiskScore? _currentRiskScore;
@@ -76,6 +84,11 @@ class RiskProvider extends ChangeNotifier {
 
   // Alert stats
   AlertStats get alertStats => _alertService.getStats();
+
+  // ML Status
+  bool get mlInitialized => _mlInitialized;
+  String get mlStatus => _mlStatus;
+  bool get isMLReady => _riskCalculator.isMLReady;
 
   // ============== Risk Calculation ==============
 
@@ -332,10 +345,40 @@ class RiskProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ============== ML Initialization ==============
+
+  /// Initialize ML model asynchronously (called on startup)
+  void _initializeML() {
+    _mlStatus = 'Loading ML model...';
+    notifyListeners();
+
+    // Run ML initialization in background
+    _riskCalculator.initializeML().then((_) {
+      _mlInitialized = true;
+      _mlStatus = 'ML Ready: ${_riskCalculator.isMLReady}';
+      
+      if (kDebugMode) {
+        debugPrint('✅ RiskProvider: ML initialized successfully');
+      }
+      
+      notifyListeners();
+    }).catchError((error) {
+      _mlInitialized = false;
+      _mlStatus = 'ML Init Failed: $error';
+      
+      if (kDebugMode) {
+        debugPrint('⚠️ RiskProvider: ML init failed - $error');
+      }
+      
+      notifyListeners();
+    });
+  }
+
   @override
   void dispose() {
     _alertSubscription?.cancel();
     _alertService.dispose();
+    _riskCalculator.dispose();  // Cleanup ML resources
     super.dispose();
   }
 }

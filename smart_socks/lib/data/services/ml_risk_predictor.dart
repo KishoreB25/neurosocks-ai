@@ -3,9 +3,9 @@
 /// Runs TFLite model inference on normalized sensor features
 /// Returns risk probability (0-1) for diabetic foot ulcer prediction
 
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import '../models/sensor_reading.dart';
+import '../models/risk_score.dart' show RiskLevel;
 import '../../core/constants/ml_constants.dart';
 import 'ml_feature_engineer.dart';
 import 'ml_model_loader.dart';
@@ -69,12 +69,7 @@ class MLPredictionResult {
   }
 }
 
-/// Risk level classification
-enum RiskLevel {
-  low,      // < 0.3
-  moderate, // 0.3 - 0.6
-  high      // > 0.6
-}
+// RiskLevel is imported from risk_score.dart (low, moderate, high, critical)
 
 /// Performs ML inference for risk prediction
 class MLRiskPredictor {
@@ -156,9 +151,9 @@ class MLRiskPredictor {
 
   // ============== Prediction ==============
 
-  /// Predict risk from sensor reading
+  /// Predict risk from sensor reading (synchronous)
   /// Complete pipeline: extract features → normalize → infer
-  Future<MLPredictionResult> predictFromReading(SensorReading reading) async {
+  MLPredictionResult predictFromReading(SensorReading reading) {
     try {
       // 1. Extract and engineer features
       final features = _featureEngineer.processSensorReading(reading);
@@ -168,7 +163,7 @@ class MLRiskPredictor {
       }
 
       // 2. Run inference
-      return await predictFromFeatures(features);
+      return predictFromFeatures(features);
     } catch (e) {
       if (debugLogging) {
         debugPrint('❌ Prediction error: $e');
@@ -177,8 +172,8 @@ class MLRiskPredictor {
     }
   }
 
-  /// Predict risk from pre-computed normalized features
-  Future<MLPredictionResult> predictFromFeatures(List<double> features) async {
+  /// Predict risk from pre-computed normalized features (synchronous)
+  MLPredictionResult predictFromFeatures(List<double> features) {
     try {
       // Validate model is ready
       if (!_modelLoader.isLoaded) {
@@ -268,37 +263,11 @@ class MLRiskPredictor {
         return null;
       }
 
-      // Allocate tensors
-      interpreter.allocateTensors();
+      // Prepare output buffer [1×1] for binary classification probability
+      var output = [List<double>.filled(1, 0.0)];
 
-      // Get input/output tensors
-      final inputTensors = interpreter.getInputTensors();
-      final outputTensors = interpreter.getOutputTensors();
-
-      if (inputTensors.isEmpty || outputTensors.isEmpty) {
-        if (debugLogging) {
-          debugPrint('❌ No input/output tensors found');
-        }
-        return null;
-      }
-
-      // Convert input to tensor format (Float32List)
-      final flatInput = input.expand((row) => row).toList();
-      final inputTensor = Float32List.fromList(flatInput);
-
-      // Set input tensor data
-      interpreter.setInput(0, inputTensor);
-
-      // Run inference
-      interpreter.invoke();
-
-      // Get output tensor
-      final output = interpreter.getOutput(0);
-
-      if (output == null) {
-        if (debugLogging) debugPrint('❌ Output is null');
-        return null;
-      }
+      // Run inference: interpreter.run(input, output) is the correct API
+      interpreter.run(input, output);
 
       return output;
     } catch (e) {
