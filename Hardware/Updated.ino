@@ -169,6 +169,12 @@ bool maxReadFifo(uint32_t &red, uint32_t &ir) {
 
 // Drain available FIFO samples into ring buffers
 void maxCollectSamples() {
+  // DON'T read I2C constantly - causes bus contention with MPU
+  // Only read when we have time (not right after MPU read)
+  static unsigned long lastMaxRead = 0;
+  if (millis() - lastMaxRead < 5) return;  // Wait 5ms between MAX reads
+  lastMaxRead = millis();
+  
   uint8_t wrPtr = i2cRead8(MAX_ADDR, 0x04) & 0x1F;
   uint8_t rdPtr = i2cRead8(MAX_ADDR, 0x06) & 0x1F;
   int numSamples = (wrPtr >= rdPtr) ? (wrPtr - rdPtr) : (32 + wrPtr - rdPtr);
@@ -176,8 +182,8 @@ void maxCollectSamples() {
   // Debug: Print FIFO status every 2 seconds
   static unsigned long lastFifoDebug = 0;
   if (millis() - lastFifoDebug > 2000) {
-    Serial.printf("[FIFO] wrPtr:%d rdPtr:%d numSamples:%d bufIdx:%d\n", 
-                   wrPtr, rdPtr, numSamples, bufIdx);
+    Serial.printf("[FIFO] wrPtr:%d rdPtr:%d numSamples:%d bufIdx:%d bufFull:%d\n", 
+                   wrPtr, rdPtr, numSamples, bufIdx, bufFull);
     lastFifoDebug = millis();
   }
   
@@ -415,8 +421,11 @@ void setup() {
 // Read MPU at ~50 Hz between BT sends for accurate step detection
 unsigned long lastSend   = 0;
 unsigned long lastMpuRead = 0;
-const unsigned long SEND_INTERVAL = 2000;  // ms
-const unsigned long MPU_INTERVAL  = 20;    // ms (~50 Hz)
+const unsigned long SEND_INTERVAL = 2000;    // ms (send every 2 sec)
+const unsigned long MPU_INTERVAL  = 30;      // ms (~33 Hz, reduced from 50 Hz for I2C stability)
+const unsigned long MAX_READ_INTERVAL = 5;   // ms (throttle MAX30102 reads)
+
+unsigned long lastMaxReadAttempt = 0;
 
 void loop() {
 
