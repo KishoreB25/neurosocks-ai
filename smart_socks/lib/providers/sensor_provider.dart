@@ -12,6 +12,7 @@ import '../data/services/classic_bluetooth_service.dart';
 import '../data/services/storage_service.dart';
 import '../data/services/foot_ulcer_prediction_service.dart';
 import '../data/services/firebase/firebase_firestore_service.dart';
+import 'risk_provider.dart';
 
 /// Provider for managing sensor data and BLE connection
 /// PRODUCTION: Real Bluetooth only OR Firestore historical data
@@ -20,6 +21,7 @@ class SensorProvider extends ChangeNotifier {
   final ClassicBluetoothService _classicBtService = ClassicBluetoothService();
   final StorageService _storageService = StorageService();
   final FirebaseFirestoreService _firestoreService = FirebaseFirestoreService();
+  final RiskProvider _riskProvider = RiskProvider();  // ← NEW: Process readings for risk
 
   // Public getter for RealBleService (for device scanning)
   RealBleService get realBleService => _realBleService;
@@ -313,6 +315,10 @@ class SensorProvider extends ChangeNotifier {
   void _onReadingReceived(SensorReading reading) {
     _currentReading = reading;
     debugPrint('📊 Received reading - Temp: ${reading.temperatures}, Pressure: ${reading.pressures}');
+
+    // ✅ NEW: Process reading for RISK CALCULATION (this was missing!)
+    _riskProvider.processReading(reading);
+    debugPrint('📈 Risk calculated - Overall: ${_riskProvider.currentScore}');
 
     // Update foot data models
     _updateFootData(reading);

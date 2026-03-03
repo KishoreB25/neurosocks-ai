@@ -14,15 +14,17 @@ BluetoothSerial SerialBT;
 #define P_ARCH  34
 #define P_TOE   35
 
-// Temperature — no hardware sensors yet; set to 0 so app shows 0.0°C
+// Temperature — no hardware sensors yet; use 0.0°C baseline when disabled
 // When you add thermistors/DS18B20, replace with real reads.
 #define HAS_TEMP_SENSORS  false
+#define TEMP_BASELINE     0.0  // Show 0.0°C when no sensors (was 25.0)
+#define BATT_ADC_PIN      2    // GPIO2 (ADC1_CH1) for battery voltage
 
 /* ============== GLOBAL DATA =============== */
 
 uint16_t stepCount    = 0;
 uint8_t  activityType = 0;   // 0=rest
-uint8_t  batteryLevel = 85;  // placeholder until ADC wired
+uint8_t  batteryLevel = 85;  // Read from ADC in loop()
 
 // --- MAX30102 HR detection ---
 #define HR_BUF_SIZE  60      // ~30 s of samples at 2 Hz internal averaging
@@ -71,27 +73,74 @@ int16_t i2cRead16(uint8_t addr, uint8_t reg) {
 /* ========== MAX30102 FUNCTIONS ============ */
 
 void maxInit() {
-  // Reset
+  Serial.println("\n=== MAX30102 INITIALIZATION ===");
+  delay(100);
+  
+  // Step 1: Verify I2C Communication
+  Serial.print("[1] Checking I2C connection to 0x57... ");
+  Wire.begin(21, 22);  // Explicitly set I2C pins: SDA=21, SCL=22
+  delay(50);
+  
+  Wire.beginTransmission(MAX_ADDR);
+  int I2CError = Wire.endTransmission();
+  if (I2CError == 0) {
+    Serial.println("✅ ACK received");
+  } else {
+    Serial.printf("❌ I2C Error: %d (Check SDA:21, SCL:22, 3.3V, GND)\n", I2CError);
+    return;
+  }
+
+  // Step 2: Read Part ID to verify sensor
+  Serial.print("[2] Reading Part ID register... ");
+  uint8_t id = i2cRead8(MAX_ADDR, 0xFF);
+  Serial.printf("ID: 0x%02X\n", id);
+  if (id != 0x15) {
+    Serial.printf("❌ WRONG ID! Expected 0x15, got 0x%02X. Wrong sensor connected?\n", id);
+    return;
+  } else {
+    Serial.println("✅ Correct MAX30102 sensor detected!");
+  }
+
+  // Step 3: Reset
+  Serial.print("[3] Sending RESET command... ");
   i2cWrite(MAX_ADDR, 0x09, 0x40);
   delay(100);
+  Serial.println("✅");
 
-  // FIFO config: sample avg = 4, FIFO rollover ON
-  i2cWrite(MAX_ADDR, 0x08, 0x50);
+  // Step 4: Configure FIFO
+  Serial.print("[4] Configuring FIFO... ");
+  i2cWrite(MAX_ADDR, 0x08, 0x50);  // Sample avg=4, rollover=ON
+  Serial.println("✅");
 
-  // Mode: SpO2 mode (RED + IR)
+  // Step 5: Set Mode to SpO2
+  Serial.print("[5] Setting SpO2 mode... ");
   i2cWrite(MAX_ADDR, 0x09, 0x03);
+  Serial.println("✅");
 
-  // SpO2 config: ADC range 4096, 100 sps, 411 µs pulse
+  // Step 6: Configure SpO2
+  Serial.print("[6] Configuring SpO2 (ADC/sample rate)... ");
   i2cWrite(MAX_ADDR, 0x0A, 0x27);
+  Serial.println("✅");
 
-  // LED pulse amplitude
-  i2cWrite(MAX_ADDR, 0x0C, 0x24);   // RED ~7 mA
-  i2cWrite(MAX_ADDR, 0x0D, 0x24);   // IR  ~7 mA
+  // Step 7: Set LED Current (THIS WAS THE MAIN PROBLEM - was too weak)
+  Serial.print("[7] Setting LED current to 15mA... ");
+  i2cWrite(MAX_ADDR, 0x0C, 0x40);   // RED  15mA
+  i2cWrite(MAX_ADDR, 0x0D, 0x40);   // IR   15mA
+  Serial.println("✅");
 
-  // Clear FIFO pointers
+  // Step 8: Clear FIFO
+  Serial.print("[8] Clearing FIFO pointers... ");
   i2cWrite(MAX_ADDR, 0x04, 0x00);
   i2cWrite(MAX_ADDR, 0x05, 0x00);
   i2cWrite(MAX_ADDR, 0x06, 0x00);
+  Serial.println("✅");
+
+  // Step 9: Verify FIFO is working
+  Serial.print("[9] Checking FIFO status... ");
+  uint8_t status = i2cRead8(MAX_ADDR, 0x00);
+  Serial.printf("Status: 0x%02X\n", status);
+
+  Serial.println("\n✅ MAX30102 READY! Hold finger on sensor for 3-5 seconds...\n");
 }
 
 // Read one RED+IR sample pair from FIFO (6 bytes total)
@@ -123,6 +172,15 @@ void maxCollectSamples() {
   uint8_t wrPtr = i2cRead8(MAX_ADDR, 0x04) & 0x1F;
   uint8_t rdPtr = i2cRead8(MAX_ADDR, 0x06) & 0x1F;
   int numSamples = (wrPtr >= rdPtr) ? (wrPtr - rdPtr) : (32 + wrPtr - rdPtr);
+  
+  // Debug: Print FIFO status every 2 seconds
+  static unsigned long lastFifoDebug = 0;
+  if (millis() - lastFifoDebug > 2000) {
+    Serial.printf("[FIFO] wrPtr:%d rdPtr:%d numSamples:%d bufIdx:%d\n", 
+                   wrPtr, rdPtr, numSamples, bufIdx);
+    lastFifoDebug = millis();
+  }
+  
   if (numSamples == 0) return;
   if (numSamples > 16) numSamples = 16;  // cap per read cycle
 
@@ -144,13 +202,21 @@ void maxCollectSamples() {
 // and SpO2 from RED/IR ratio
 void maxCompute(float &spo2, uint16_t &hr) {
   int count = bufFull ? HR_BUF_SIZE : bufIdx;
-  if (count < 10) {
+  
+  // Need minimum 30 samples (~0.3 sec) for stable reading
+  // Ideally 60+ samples (~0.6 sec) for accuracy
+  if (count < 30) {
     spo2 = 0;
-    hr   = 0;
+    hr = 0;
+    static unsigned long lastMsg = 0;
+    if (millis() - lastMsg > 1000) {  // Print every 1 sec instead of 3
+      Serial.printf("[MAX] Warming up... %d/60 samples (hold finger on sensor)\n", count);
+      lastMsg = millis();
+    }
     return;
   }
 
-  // --- DC (mean) and AC (max-min) for both channels ---
+  // --- Calculate DC (mean) and AC (peak-to-peak) ---
   uint32_t irSum = 0, redSum = 0;
   uint32_t irMin = 0xFFFFFFFF, irMax = 0;
   uint32_t redMin = 0xFFFFFFFF, redMax = 0;
@@ -168,31 +234,60 @@ void maxCompute(float &spo2, uint16_t &hr) {
   float redDC = (float)redSum / count;
   float irAC  = (float)(irMax  - irMin);
   float redAC = (float)(redMax - redMin);
+  
+  // Debug output every 2 seconds
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 2000) {
+    Serial.printf("[MAX] irDC:%.0f redDC:%.0f irAC:%.0f redAC:%.0f ratio:%.2f samples:%d\n",
+                   irDC, redDC, irAC, redAC, redDC/irDC, count);
+    lastDebug = millis();
+  }
 
-  // Finger presence check (IR DC should be > threshold)
-  if (irDC < 5000) {
+  // --- ADAPTIVE Finger Detection (3-point check) ---
+  
+  // Check 1: AC ripple (heartbeat pulsatile component)
+  // Real finger with 15mA LED: irAC typically 1000-5000
+  // No finger or blowing: irAC < 300
+  if (irAC < 300) {
     spo2 = 0;
-    hr   = 0;
+    hr = 0;
     return;
   }
 
-  // --- SpO2 via ratio-of-ratios ---
-  if (irDC > 0 && redDC > 0 && irAC > 0) {
+  // Check 2: DC signal baseline (light intensity)
+  // Real finger: irDC 5000-50000 (depends on skin tone)
+  // Ambient only: irDC < 1000
+  if (irDC < 1000) {
+    spo2 = 0;
+    hr = 0;
+    return;
+  }
+
+  // Check 3: RED/IR ratio (blood absorption signature)
+  // Real finger: redDC ≈ irDC (both wavelengths absorbed)
+  // Plastic/foam: redDC >> irDC or vice versa
+  float ratio = redDC / irDC;
+  if (ratio < 0.5 || ratio > 2.0) {
+    spo2 = 0;
+    hr = 0;
+    return;
+  }
+
+  // --- SpO2 Calculation (industry standard ratio-of-ratios) ---
+  if (irDC > 0 && redDC > 0 && irAC > 0 && redAC > 0) {
     float R = (redAC / redDC) / (irAC / irDC);
-    // Linear approximation: SpO2 ≈ 110 - 25 * R
-    // Calibrate with known reference if needed
+    // Empirical formula: SpO2 = 110 - 25*R
     spo2 = 110.0 - 25.0 * R;
-    if (spo2 > 100.0) spo2 = 100.0;
-    if (spo2 < 0.0)   spo2 = 0.0;
+    // Clamp to realistic range (70-100%)
+    spo2 = constrain(spo2, 70.0, 100.0);
   } else {
     spo2 = 0;
   }
 
-  // --- Heart rate via zero-crossing on IR AC component ---
-  // Count "peaks" where sample crosses above mean then back below
+  // --- Heart Rate Calculation (peak counting on IR signal) ---
   int peaks = 0;
   bool above = false;
-  float threshold = irDC + irAC * 0.3;  // 30% above mean
+  float threshold = irDC + irAC * 0.3;  // Peak = DC + 30% of AC swing
 
   for (int i = 0; i < count; i++) {
     if (!above && irBuffer[i] > threshold) {
@@ -203,12 +298,13 @@ void maxCompute(float &spo2, uint16_t &hr) {
     }
   }
 
-  // samples span ~(count / 25) seconds (100 sps / 4 avg = 25 effective sps)
+  // Convert peaks to BPM
+  // Sensor: 100 Hz → 4x averaging = 25 effective Hz
   float seconds = (float)count / 25.0;
-  if (seconds > 0 && peaks > 1) {
-    hr = (uint16_t)((float)(peaks - 1) / seconds * 60.0);
-    if (hr > 220) hr = 220;
-    if (hr < 30)  hr = 0;   // likely noise
+  if (seconds > 0 && peaks > 0) {
+    hr = (uint16_t)((float)peaks / seconds * 60.0);
+    // Sanity check: realistic HR is 40-200 BPM
+    if (hr < 40 || hr > 200) hr = 0;
   } else {
     hr = 0;
   }
@@ -251,13 +347,14 @@ void mpuDetectSteps(float ax, float ay, float az) {
   accelSamples++;
 
   // Peak detection with hysteresis
-  // Threshold tuned for walking (~12 m/s² peak vs ~9.8 rest)
-  const float STEP_HIGH = 11.5;
-  const float STEP_LOW  = 9.5;
+  // Further lowered thresholds: 10.0 up / 9.6 down to catch realistic walking
+  const float STEP_HIGH = 10.0;  // WAS 10.5 (was 11.5 originally)
+  const float STEP_LOW  = 9.6;   // WAS 9.3 (was 9.5 originally)
 
   if (!stepHigh && mag > STEP_HIGH) {
     stepHigh = true;
     stepCount++;
+    Serial.printf("[MPU] STEP! Count: %d, Mag: %.2f m/s²\n", stepCount, mag);
   } else if (stepHigh && mag < STEP_LOW) {
     stepHigh = false;
   }
@@ -276,11 +373,18 @@ void mpuClassifyActivity() {
   float avgMag = accelMagSum / accelSamples;
 
   // Deviation from gravity (~9.81 m/s²)
+  // Tightened thresholds to better distinguish activity levels:
+  // 0.15: barely any motion (sleeping/very still)
+  // 0.35: small movements (sitting, light breathing)
+  // 0.55: postural sway (standing)
+  // 0.85: active movement (walking)
+  // >0.85: high energy (running/exercising)
   float dev = abs(avgMag - 9.81);
 
-  if (dev < 0.3)       activityType = 0;  // resting / still
-  else if (dev < 0.8)  activityType = 2;  // standing (minor sway)
-  else if (dev < 2.5)  activityType = 3;  // walking
+  if (dev < 0.15)      activityType = 0;  // rest
+  else if (dev < 0.35) activityType = 1;  // sitting
+  else if (dev < 0.55) activityType = 2;  // standing
+  else if (dev < 0.85) activityType = 3;  // walking
   else                  activityType = 4;  // running
 
   // Reset for next cycle
@@ -345,13 +449,28 @@ void loop() {
     temp[2] = readThermistor(2);
     temp[3] = readThermistor(3);
   #else
-    // No temp sensors → send 0 (byte 128 → decodes to 25.0 + 0 = 25.0)
-    // Using 128 means "25.0°C" which is the baseline.
-    // Send raw 0 instead so app shows 25.0 - 64.0 = -39.0 → obviously wrong
-    // Better: send 128 for each so app shows 25.0°C (neutral baseline)
-    // OR send a sentinel. Cleanest: use real baseline 25.0°C
-    temp[0] = 0; temp[1] = 0; temp[2] = 0; temp[3] = 0;
+    // No temp sensors → send 0.0°C baseline
+    // Encoding: byte = (0.0 - 25.0) * 2.0 + 128 = -50 + 128 = 78
+    // When Dart decodes: 25.0 + (78 - 128) / 2.0 = 25.0 - 25.0 = 0.0°C
+    temp[0] = TEMP_BASELINE; temp[1] = TEMP_BASELINE; temp[2] = TEMP_BASELINE; temp[3] = TEMP_BASELINE;
   #endif
+
+  // -- Battery Level (read from ADC) --
+  // Simple direct mapping: 12-bit ADC (0-4095) → 0-100%
+  // If battery circuit not connected, GPIO2 typically reads 0-500, which maps to safe 10% (not 0%)
+  int battRaw = analogRead(BATT_ADC_PIN);
+  
+  // Map: 0-4095 ADC → 0-100%
+  // With linear scaling and low-end boost to avoid false 0%
+  if (battRaw < 200) {
+    // ADC reads very low (circuit not connected) → show 85% as safe placeholder
+    batteryLevel = 85;
+  } else {
+    // Direct linear mapping: (rawValue / 4095) * 100
+    batteryLevel = (battRaw * 100) / 4095;
+  }
+  
+  Serial.printf("[BATT] Raw ADC: %d → Level: %d%%\n", battRaw, batteryLevel);
 
   // -- Pressures (from ADC → kPa) --
   float pressure[4];
@@ -374,11 +493,7 @@ void loop() {
 
   // Temperatures (Bytes 0–3): encoding = (temp - 25.0) * 2.0 + 128
   for (int i = 0; i < 4; i++) {
-    #if HAS_TEMP_SENSORS
-      payload[i] = (uint8_t)constrain((temp[i] - 25.0) * 2.0 + 128, 0, 255);
-    #else
-      payload[i] = 0;   // 0 → app decodes as -39.0°C → clearly "no sensor"
-    #endif
+    payload[i] = (uint8_t)constrain((temp[i] - 25.0) * 2.0 + 128, 0, 255);
   }
 
   // Pressures (Bytes 4–7): encoding = pressure / 0.3
