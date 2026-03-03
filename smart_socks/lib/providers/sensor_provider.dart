@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../data/models/sensor_reading.dart';
 import '../data/models/foot_data.dart';
-import '../data/models/risk_score.dart';
 import '../data/services/real_ble_service.dart';
 import '../data/services/classic_bluetooth_service.dart';
 import '../data/services/storage_service.dart';
