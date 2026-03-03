@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../models/sensor_reading.dart';
 import '../models/risk_score.dart';
 import '../../core/constants/sensor_constants.dart';
-import 'ml_risk_predictor.dart' show MLRiskPredictor, MLPredictionResult;
+import 'ml_risk_predictor.dart' show MLRiskPredictor;
 
 /// Calculates risk scores from sensor readings
 /// Primary: ML-based predictions | Fallback: Weighted algorithm (temp 30%, pressure 35%, circulation 20%, gait 15%)
