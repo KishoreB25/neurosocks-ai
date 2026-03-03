@@ -11,6 +11,21 @@ import '../data/services/storage_service.dart';
 
 /// Provider for managing risk calculations and alerts
 class RiskProvider extends ChangeNotifier {
+  // Singleton pattern - ensure only one instance exists globally
+  static final RiskProvider _instance = RiskProvider._internal();
+  
+  factory RiskProvider() {
+    return _instance;
+  }
+  
+  RiskProvider._internal() {
+    // Listen to alert stream
+    _alertSubscription = _alertService.alertStream.listen(_onNewAlert);
+    
+    // Load initial data
+    _loadInitialData();
+  }
+  
   final RiskCalculator _riskCalculator = RiskCalculator();
   final AlertService _alertService = AlertService();
   final StorageService _storageService = StorageService();
@@ -34,13 +49,7 @@ class RiskProvider extends ChangeNotifier {
 
   // ============== Constructor ==============
 
-  RiskProvider() {
-    // Listen to alert stream
-    _alertSubscription = _alertService.alertStream.listen(_onNewAlert);
-    
-    // Load initial data
-    _loadInitialData();
-  }
+  // Removed legacy constructor - now using singleton factory pattern
 
   // ============== Getters ==============
 

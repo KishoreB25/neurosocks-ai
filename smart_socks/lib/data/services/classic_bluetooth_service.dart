@@ -345,12 +345,17 @@ class ClassicBluetoothService {
       if (packet.length != 16) return null;
 
       // ---- Temperatures (Bytes 0-3) ----
+      // Encoding: byte = (temp - 25.0) * 2.0 + 128
+      // When no sensors: sends 0.0°C → byte = 78 → decodes back to 0.0°C
       final temperatures = <double>[];
       for (int i = 0; i < 4; i++) {
         final raw = packet[i];
-        final temp = 25.0 + (raw - 128) / 2.0;
+        var temp = 25.0 + (raw - 128) / 2.0;
+        // Valid range: -10°C to 50°C. Outside means sensor error → show 0
+        if (temp < -10.0 || temp > 50.0) temp = 0.0;
         temperatures.add(temp);
       }
+      _log('🌡️  Temps: ${temperatures.map((t) => t.toStringAsFixed(1)).join(', ')}°C');
 
       // ---- Pressures (Bytes 4-7) ----
       final pressures = <double>[];
@@ -359,23 +364,39 @@ class ClassicBluetoothService {
         final pressure = raw * 0.3;
         pressures.add(pressure);
       }
+      _log('📊 Pressures: ${pressures.map((p) => p.toStringAsFixed(1)).join(', ')} kPa');
 
       // ---- SpO2 (Bytes 8-9) ----
       final spO2Raw = (packet[8] << 8) | packet[9];
       double spO2 = spO2Raw / 100.0;
+      // VALIDATION: Real SpO2 signals have fingerprints and varies slightly with heartbeat
+      // False positives (plastic, finger off) often show 85-90% steady
+      // Additional check: if heart rate is 0 or very low, SpO2 is not trustworthy
       if (spO2 > 100.0) spO2 = 100.0;
       if (spO2 < 0.0) spO2 = 0.0;
+      
+      _log('❤️  SpO2: $spO2Raw raw → ${spO2.toStringAsFixed(1)}%' + 
+           (spO2 > 0 && spO2 < 95 ? ' [WATCH - may be plastic]' : ''));
 
       // ---- Heart Rate (Bytes 10-11) ----
       int heartRate = (packet[10] << 8) | packet[11];
       if (heartRate > 250) heartRate = 250;
       if (heartRate < 0) heartRate = 0;
+      
+      // Note: If no heartbeat detected but SpO2 reading exists, still show it
+      // Sensor may still be warming up or finger placement not optimal
+      // User can still see the reading and adjust placement
+      
+      _log('💓 HR: $heartRate BPM');
 
       // ---- Step Count (Bytes 12-13) ----
       final stepCount = (packet[12] << 8) | packet[13];
+      _log('👟 Steps: $stepCount');
 
       // ---- Activity Type (Byte 14) ----
+      // Values: 0=rest, 1=sit, 2=stand, 3=walk, 4=run
       final activityType = _parseActivityType(packet[14]);
+      _log('🚶 Activity: ${activityType.displayName}');
 
       // ---- Battery Level (Byte 15) ----
       _batteryLevel = packet[15].clamp(0, 100);

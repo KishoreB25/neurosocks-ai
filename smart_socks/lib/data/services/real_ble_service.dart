@@ -446,7 +446,9 @@ class RealBleService {
       final temperatures = <double>[];
       for (int i = 0; i < 4; i++) {
         final tempByte = packet[i];
-        final temp = 25.0 + (tempByte - 128) / 2.0;
+        var temp = 25.0 + (tempByte - 128) / 2.0;
+        // Valid range: -10°C to 50°C. Outside means sensor error → show 0
+        if (temp < -10.0 || temp > 50.0) temp = 0.0;
         temperatures.add(temp);
       }
 
@@ -460,10 +462,13 @@ class RealBleService {
 
       // Parse SpO2 (Bytes 8-9)
       final spO2Raw = (packet[8] << 8) | packet[9];
-      final spO2 = spO2Raw / 100.0;
+      var spO2 = spO2Raw / 100.0;
+      if (spO2 > 100.0) spO2 = 100.0;
+      if (spO2 < 0.0) spO2 = 0.0;
 
       // Parse Heart Rate (Bytes 10-11)
-      final heartRate = (packet[10] << 8) | packet[11];
+      var heartRate = (packet[10] << 8) | packet[11];
+      if (heartRate > 250) heartRate = 250;
 
       // Parse Step Count (Bytes 12-13)
       final stepCount = (packet[12] << 8) | packet[13];
@@ -472,7 +477,7 @@ class RealBleService {
       final activityType = _parseActivityType(packet[14]);
 
       // Parse Battery Level (Byte 15)
-      _batteryLevel = packet[15];
+      _batteryLevel = packet[15].clamp(0, 100);
 
       // Generate dummy IMU data
       final accData = _generateDummyAccelerometerData(stepCount);
