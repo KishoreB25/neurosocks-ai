@@ -41,12 +41,13 @@ class SensorReading extends Equatable {
     required this.pressures,
     required this.spO2,
     required this.heartRate,
-    required this.accelerometer,
-    required this.gyroscope,
+    AccelerometerData? accelerometer,
+    GyroscopeData? gyroscope,
     this.stepCount = 0,
     this.batteryLevel = 100,
     this.activityType = ActivityType.unknown,
-  });
+  })  : accelerometer = accelerometer ?? const AccelerometerData(x: 0, y: 0, z: 9.8),
+        gyroscope = gyroscope ?? const GyroscopeData(x: 0, y: 0, z: 0);
 
   /// Create a SensorReading from JSON (BLE packet or Firestore)
   factory SensorReading.fromJson(Map<String, dynamic> json) {
@@ -219,8 +220,6 @@ class SensorReading extends Equatable {
       pressures: [0.0, 0.0, 0.0, 0.0],
       spO2: 0.0,
       heartRate: 0,
-      accelerometer: AccelerometerData.zero(),
-      gyroscope: GyroscopeData.zero(),
     );
   }
 
