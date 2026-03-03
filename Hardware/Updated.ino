@@ -14,11 +14,30 @@ BluetoothSerial SerialBT;
 #define P_ARCH  34
 #define P_TOE   35
 
-// Temperature — no hardware sensors yet; use 0.0°C baseline when disabled
-// When you add thermistors/DS18B20, replace with real reads.
-#define HAS_TEMP_SENSORS  false
-#define TEMP_BASELINE     0.0  // Show 0.0°C when no sensors (was 25.0)
-#define BATT_ADC_PIN      2    // GPIO2 (ADC1_CH1) for battery voltage
+// ⚠️ IMPORTANT: ADC2 (GPIO 0,2,4,12-15,25-27) CANNOT be used when
+//    Bluetooth (Classic or BLE) is active on ESP32!
+//    Only ADC1 pins work: GPIO 32,33,34,35,36,39
+//
+// Temperature sensor — 1 physical NTC on ADC1
+// Wiring: 3.3V → 10kΩ fixed resistor → ADC pin → NTC → GND
+// Only GPIO 36 works reliably. Ball, Arch, Toe are derived from Heel
+// with realistic thermal gradients (foot periphery is cooler).
+#define HAS_TEMP_SENSORS  true   // Set false to disable temperature entirely
+#define T_HEEL  36        // GPIO36 (VP) = ADC1_CH0  — Only working sensor
+// Ball, Arch, Toe: derived mathematically from Heel reading
+//   Ball = Heel - 0.3°C  (slightly cooler, plantar surface)
+//   Arch = Heel - 0.5°C  (cooler, less blood flow)
+//   Toe  = Heel - 0.8°C  (coldest, farthest from core)
+
+// NTC thermistor parameters (common 10kΩ NTC — adjust B for your part)
+#define NTC_R_SERIES   10000.0   // Fixed series resistor in voltage divider (ohms)
+#define NTC_R_NOMINAL  10000.0   // NTC resistance at 25°C (ohms)
+#define NTC_B_COEFF    3950.0    // B-coefficient (check your NTC datasheet)
+#define NTC_T_NOMINAL  25.0      // Reference temperature for nominal R (°C)
+
+#define TEMP_BASELINE     0.0    // Fallback value when sensors disabled
+// Battery: GPIO2 is ADC2 → also broken with BT. Use fixed 85% placeholder.
+// For real battery monitoring add a voltage divider to GPIO36/39 or an I2C fuel gauge.
 
 /* ============== GLOBAL DATA =============== */
 
@@ -34,10 +53,12 @@ int      bufIdx = 0;
 bool     bufFull = false;
 
 // --- MPU6050 step detection ---
-float    prevMag      = 0;
-bool     stepHigh     = false;
-float    accelMagSum  = 0;
-int      accelSamples = 0;
+float    prevMag       = 0;
+bool     stepHigh      = false;
+float    accelMagSum   = 0;
+int      accelSamples  = 0;
+unsigned long lastStepTime = 0;            // Step debounce timer
+const unsigned long STEP_DEBOUNCE = 300;   // Min ms between steps (prevents double-count)
 
 /* ============ I2C HELPERS ================= */
 
@@ -70,16 +91,63 @@ int16_t i2cRead16(uint8_t addr, uint8_t reg) {
   return 0;
 }
 
+/* ======= ADC & TEMPERATURE HELPERS ======= */
+
+// Read ADC with multi-sample averaging (reduces noise significantly)
+float readADCAverage(int pin) {
+  long sum = 0;
+  for (int i = 0; i < 16; i++) {
+    sum += analogRead(pin);
+    delayMicroseconds(200);
+  }
+  return (float)sum / 16.0;
+}
+
+// Read NTC thermistor temperature via voltage divider
+// Circuit: 3.3V → NTC_R_SERIES → ADC_PIN → NTC → GND
+float readThermistor(int pin) {
+  float adcVal = readADCAverage(pin);
+
+  // Debug: always print raw ADC so we can diagnose wiring
+  Serial.printf("[NTC] GPIO%d raw ADC: %.1f\n", pin, adcVal);
+
+  // Open circuit (no sensor) or shorted
+  if (adcVal < 1.0 || adcVal > 4090.0) {
+    Serial.printf("[NTC] GPIO%d REJECTED (open/short)\n", pin);
+    return 0.0;
+  }
+
+  // Calculate NTC resistance from voltage divider ratio
+  float resistance = NTC_R_SERIES * adcVal / (4095.0 - adcVal);
+
+  // B-parameter Steinhart-Hart equation:
+  //   1/T = 1/T0 + (1/B) * ln(R/R0)
+  float steinhart = log(resistance / NTC_R_NOMINAL) / NTC_B_COEFF;
+  steinhart += 1.0 / (NTC_T_NOMINAL + 273.15);
+  float tempC = 1.0 / steinhart - 273.15;
+
+  // Reject clearly invalid readings (sensor fault)
+  if (tempC < -10.0 || tempC > 60.0) return 0.0;
+
+  return tempC;
+}
+
+// Read pressure sensor with ADC averaging for stable values
+float readPressureADC(int pin) {
+  float adcVal = readADCAverage(pin);
+  return adcVal * 77.0 / 4095.0;  // Map 12-bit ADC → 0-77 kPa range
+}
+
 /* ========== MAX30102 FUNCTIONS ============ */
 
 void maxInit() {
   Serial.println("\n=== MAX30102 INITIALIZATION ===");
   delay(100);
   
+  // Wire.begin() already called in setup() — no duplicate needed here
+
   // Step 1: Verify I2C Communication
   Serial.print("[1] Checking I2C connection to 0x57... ");
-  Wire.begin(21, 22);  // Explicitly set I2C pins: SDA=21, SCL=22
-  delay(50);
   
   Wire.beginTransmission(MAX_ADDR);
   int I2CError = Wire.endTransmission();
@@ -358,9 +426,13 @@ void mpuDetectSteps(float ax, float ay, float az) {
   const float STEP_LOW  = 9.6;   // WAS 9.3 (was 9.5 originally)
 
   if (!stepHigh && mag > STEP_HIGH) {
-    stepHigh = true;
-    stepCount++;
-    Serial.printf("[MPU] STEP! Count: %d, Mag: %.2f m/s²\n", stepCount, mag);
+    // Debounce: ignore if last step was too recent (prevents double-counting)
+    if (millis() - lastStepTime >= STEP_DEBOUNCE) {
+      stepHigh = true;
+      stepCount++;
+      lastStepTime = millis();
+      Serial.printf("[MPU] STEP! Count: %d, Mag: %.2f m/s²\n", stepCount, mag);
+    }
   } else if (stepHigh && mag < STEP_LOW) {
     stepHigh = false;
   }
@@ -404,7 +476,7 @@ void setup() {
   Serial.begin(115200);
   SerialBT.begin("NeuroSock");
 
-  Wire.begin(21, 22);
+63  Wire.begin(21, 22);
 
   maxInit();
   mpuInit();
@@ -413,7 +485,7 @@ void setup() {
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
 
-  Serial.println("NeuroSock ready — MAX30102 + MPU6050 + Pressure");
+  Serial.println("NeuroSock ready — MAX30102 + MPU6050 + Pressure + Temperature (Heel Only)");
 }
 
 /* =============== LOOP ===================== */
@@ -449,44 +521,47 @@ void loop() {
 
   /* -------- SENSOR READINGS -------- */
 
-  // -- Temperatures --
+  // -- Temperatures (1 physical NTC on ADC1, 3 derived) --
   float temp[4];
   #if HAS_TEMP_SENSORS
-    // TODO: Replace with your real thermistor / DS18B20 reads
-    temp[0] = readThermistor(0);
-    temp[1] = readThermistor(1);
-    temp[2] = readThermistor(2);
-    temp[3] = readThermistor(3);
+    // Read only Heel (GPIO36) — the only working sensor
+    float heelTemp = readThermistor(T_HEEL);
+
+    // Derive Ball, Arch, Toe from Heel with realistic thermal gradients
+    // Feet naturally cool from core (Heel) to periphery (Toe):
+    //   Heel  = core warmth (main source)
+    //   Ball  = slightly cooler (plantar surface exposed)
+    //   Arch  = cooler still (less perfusion)
+    //   Toe   = coldest (farthest from heart, highest surface area)
+    float ballTemp = (heelTemp > 0) ? heelTemp - 0.3 : 0;
+    float archTemp = (heelTemp > 0) ? heelTemp - 0.5 : 0;
+    float toeTemp  = (heelTemp > 0) ? heelTemp - 0.8 : 0;
+
+    temp[0] = heelTemp;  // Heel  — physical sensor
+    temp[1] = ballTemp;  // Ball  — derived
+    temp[2] = archTemp;  // Arch  — derived
+    temp[3] = toeTemp;   // Toe   — derived
+    Serial.printf("[TEMP] Heel:%.1f Ball*:%.1f Arch*:%.1f Toe*:%.1f °C (* = derived)\n",
+                   temp[0], temp[1], temp[2], temp[3]);
   #else
-    // No temp sensors → send 0.0°C baseline
-    // Encoding: byte = (0.0 - 25.0) * 2.0 + 128 = -50 + 128 = 78
-    // When Dart decodes: 25.0 + (78 - 128) / 2.0 = 25.0 - 25.0 = 0.0°C
-    temp[0] = TEMP_BASELINE; temp[1] = TEMP_BASELINE; temp[2] = TEMP_BASELINE; temp[3] = TEMP_BASELINE;
+    // No temp sensors connected → send baseline (decoded as 0.0°C by app)
+    temp[0] = TEMP_BASELINE; temp[1] = TEMP_BASELINE;
+    temp[2] = TEMP_BASELINE; temp[3] = TEMP_BASELINE;
   #endif
 
-  // -- Battery Level (read from ADC) --
-  // Simple direct mapping: 12-bit ADC (0-4095) → 0-100%
-  // If battery circuit not connected, GPIO2 typically reads 0-500, which maps to safe 10% (not 0%)
-  int battRaw = analogRead(BATT_ADC_PIN);
-  
-  // Map: 0-4095 ADC → 0-100%
-  // With linear scaling and low-end boost to avoid false 0%
-  if (battRaw < 200) {
-    // ADC reads very low (circuit not connected) → show 85% as safe placeholder
-    batteryLevel = 85;
-  } else {
-    // Direct linear mapping: (rawValue / 4095) * 100
-    batteryLevel = (battRaw * 100) / 4095;
-  }
-  
-  Serial.printf("[BATT] Raw ADC: %d → Level: %d%%\n", battRaw, batteryLevel);
+  // -- Battery Level --
+  // GPIO2 is on ADC2 → cannot read with BT active. Use fixed placeholder.
+  // For real battery monitoring, use an I2C fuel gauge (MAX17048) or
+  // wire a voltage divider to a free ADC1 pin.
+  batteryLevel = 85;  // Safe placeholder
+  Serial.printf("[BATT] Level: %d%% (fixed — no ADC1 pin available)\n", batteryLevel);
 
-  // -- Pressures (from ADC → kPa) --
+  // -- Pressures (from ADC → kPa, with multi-sample averaging) --
   float pressure[4];
-  pressure[0] = analogRead(P_HEEL) * 77.0 / 4095.0;
-  pressure[1] = analogRead(P_BALL) * 77.0 / 4095.0;
-  pressure[2] = analogRead(P_ARCH) * 77.0 / 4095.0;
-  pressure[3] = analogRead(P_TOE)  * 77.0 / 4095.0;
+  pressure[0] = readPressureADC(P_HEEL);
+  pressure[1] = readPressureADC(P_BALL);
+  pressure[2] = readPressureADC(P_ARCH);
+  pressure[3] = readPressureADC(P_TOE);
 
   // -- MAX30102 → SpO2 & HR --
   float spo2 = 0;
