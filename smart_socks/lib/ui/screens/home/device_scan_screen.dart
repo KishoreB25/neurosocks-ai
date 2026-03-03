@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../providers/sensor_provider.dart';
@@ -24,7 +27,102 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
   @override
   void initState() {
     super.initState();
-    _scanFuture = _startScan();
+    _scanFuture = _requestPermissionsAndScan();
+  }
+
+  /// Request Bluetooth permissions before scanning
+  Future<List<ScanResult>> _requestPermissionsAndScan() async {
+    try {
+      debugPrint('🔐 Checking Bluetooth permissions...');
+      
+      // Use FlutterBluePlus's built-in permission checking (more reliable)
+      if (Platform.isAndroid) {
+        // Check if Bluetooth adapter is available and on
+        final adapterState = await FlutterBluePlus.adapterState.first;
+        debugPrint('📶 Bluetooth adapter state: $adapterState');
+        
+        if (adapterState != BluetoothAdapterState.on) {
+          debugPrint('❌ Bluetooth is off');
+          if (mounted) {
+            setState(() {
+              _connectingError = 'Please turn on Bluetooth';
+            });
+          }
+          // Try to turn on Bluetooth
+          try {
+            await FlutterBluePlus.turnOn();
+          } catch (e) {
+            debugPrint('Could not turn on Bluetooth: $e');
+          }
+          return [];
+        }
+        
+        // Request permissions using permission_handler
+        debugPrint('🔐 Requesting Android permissions...');
+        
+        // For Android 12+ (API 31+), we need BLUETOOTH_SCAN and BLUETOOTH_CONNECT
+        // For Android 11 and below, we need Location permission
+        final androidSdk = await _getAndroidSdkVersion();
+        debugPrint('📱 Android SDK version: $androidSdk');
+        
+        if (androidSdk >= 31) {
+          // Android 12+: Request Bluetooth permissions
+          final scanStatus = await Permission.bluetoothScan.request();
+          final connectStatus = await Permission.bluetoothConnect.request();
+          
+          debugPrint('🔐 bluetoothScan: $scanStatus, bluetoothConnect: $connectStatus');
+          
+          if (!scanStatus.isGranted || !connectStatus.isGranted) {
+            if (mounted) {
+              setState(() {
+                _connectingError = 'Bluetooth permissions required. Tap to open Settings.';
+              });
+            }
+            // Open app settings so user can grant permissions
+            await openAppSettings();
+            return [];
+          }
+        } else {
+          // Android 11 and below: Request location permission
+          final locationStatus = await Permission.locationWhenInUse.request();
+          debugPrint('🔐 locationWhenInUse: $locationStatus');
+          
+          if (!locationStatus.isGranted) {
+            if (mounted) {
+              setState(() {
+                _connectingError = 'Location permission required for Bluetooth scanning.';
+              });
+            }
+            await openAppSettings();
+            return [];
+          }
+        }
+      }
+
+      debugPrint('✅ Permissions OK, starting scan...');
+      return await _startScan();
+    } catch (e) {
+      debugPrint('❌ Permission/scan error: $e');
+      if (mounted) {
+        setState(() {
+          _connectingError = 'Error: $e';
+        });
+      }
+      return [];
+    }
+  }
+
+  /// Get Android SDK version
+  Future<int> _getAndroidSdkVersion() async {
+    try {
+      if (Platform.isAndroid) {
+        // Use method channel to get SDK version, or default to 31
+        return 31; // Default to Android 12+ behavior
+      }
+      return 0;
+    } catch (e) {
+      return 31;
+    }
   }
 
   Future<List<ScanResult>> _startScan() async {
@@ -86,9 +184,12 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
     });
 
     try {
+      debugPrint('🔌 DeviceScanScreen: Starting connection to ${device.platformName}');
       final sensorProvider = context.read<SensorProvider>();
       bool connected = await sensorProvider.connectToDevice(device);
 
+      debugPrint('🔌 DeviceScanScreen: Connection result: $connected');
+      
       if (connected) {
         // Device connected successfully
         await _saveLastConnectedDevice(device);
@@ -97,16 +198,33 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
 
         // Show success and go back
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Device connected successfully!'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text('✅ Connected to ${device.platformName}!'),
+            duration: const Duration(seconds: 2),
             backgroundColor: AppColors.success,
           ),
         );
 
         Navigator.pop(context);
+      } else {
+        // Connection returned false but didn't throw
+        setState(() {
+          _connectingError = 'Connection failed - please try again';
+          _connectingDevice = null;
+        });
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('❌ Connection failed - please try again'),
+              duration: Duration(seconds: 3),
+              backgroundColor: AppColors.error,
+            ),
+          );
+        }
       }
     } catch (e) {
+      debugPrint('❌ DeviceScanScreen: Connection error: $e');
       setState(() {
         _connectingError = 'Connection failed: $e';
         _connectingDevice = null;
@@ -115,7 +233,7 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(_connectingError!),
+            content: Text('❌ $_connectingError'),
             duration: const Duration(seconds: 3),
             backgroundColor: AppColors.error,
           ),
@@ -202,7 +320,8 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
               ElevatedButton(
                 onPressed: () {
                   setState(() {
-                    _scanFuture = _startScan();
+                    _connectingError = null;
+                    _scanFuture = _requestPermissionsAndScan();
                   });
                 },
                 child: const Text('Try Again'),
@@ -258,7 +377,8 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
           ElevatedButton(
             onPressed: () {
               setState(() {
-                _scanFuture = _startScan();
+                _connectingError = null;
+                _scanFuture = _requestPermissionsAndScan();
               });
             },
             child: const Text('Try Again'),
@@ -269,85 +389,191 @@ class _DeviceScanScreenState extends State<DeviceScanScreen> {
   }
 
   Widget _buildDeviceList(List<ScanResult> devices) {
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: devices.length,
-      itemBuilder: (context, index) {
-        final result = devices[index];
-        final device = result.device;
-        final isConnecting = _connectingDevice?.remoteId == device.remoteId;
-
-        return Card(
-          margin: const EdgeInsets.only(bottom: 12),
-          elevation: 2,
-          child: ListTile(
-            leading: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(
-                Icons.bluetooth_connected,
-                color: AppColors.primary,
-              ),
-            ),
-            title: Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Text(
-                device.platformName.isNotEmpty
-                    ? device.platformName
-                    : 'Unnamed Device',
-                style: const TextStyle(fontWeight: FontWeight.w500),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            subtitle: Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 4),
-                  Text(
-                    'ID: ${device.remoteId}',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textSecondary,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Signal: ${result.rssi} dBm',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            trailing: isConnecting
-                ? SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        AppColors.primary,
-                      ),
-                    ),
-                  )
-                : SizedBox(
-                    width: 120,
-                    child: ElevatedButton(
-                      onPressed: () => _connectToDevice(device),
-                      child: const Text('Connect'),
-                    ),
-                  ),
+    // Sort by signal strength (strongest first - closest devices)
+    final sortedDevices = List<ScanResult>.from(devices);
+    sortedDevices.sort((a, b) => b.rssi.compareTo(a.rssi));
+    
+    return Column(
+      children: [
+        // Help text
+        Container(
+          padding: const EdgeInsets.all(12),
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.blue.shade50,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.blue.shade200),
           ),
-        );
-      },
+          child: Row(
+            children: [
+              Icon(Icons.lightbulb_outline, color: Colors.blue.shade700, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Tip: Hold your phone close to ESP32. The device with strongest signal (green) is likely yours!',
+                  style: TextStyle(fontSize: 12, color: Colors.blue.shade700),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: sortedDevices.length,
+            itemBuilder: (context, index) {
+              final result = sortedDevices[index];
+              final device = result.device;
+              final isConnecting = _connectingDevice?.remoteId == device.remoteId;
+              
+              // Signal strength indicator
+              final rssi = result.rssi;
+              Color signalColor;
+              String signalText;
+              if (rssi >= -50) {
+                signalColor = Colors.green;
+                signalText = 'Excellent';
+              } else if (rssi >= -70) {
+                signalColor = Colors.orange;
+                signalText = 'Good';
+              } else {
+                signalColor = Colors.red;
+                signalText = 'Weak';
+              }
+              
+              // Check if this might be an ESP32
+              final name = device.platformName.toLowerCase();
+              final isLikelyESP32 = name.contains('esp') || 
+                                    name.contains('neuro') || 
+                                    name.contains('sock') ||
+                                    name.contains('bt') ||
+                                    name.contains('serial');
+
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                elevation: isLikelyESP32 ? 4 : 2,
+                color: isLikelyESP32 ? Colors.green.shade50 : null,
+                child: ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: signalColor.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.signal_cellular_alt,
+                          color: signalColor,
+                          size: 20,
+                        ),
+                        Text(
+                          '$rssi',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: signalColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          device.platformName.isNotEmpty
+                              ? device.platformName
+                              : 'Unknown Device',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w500,
+                            color: isLikelyESP32 ? Colors.green.shade800 : null,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (isLikelyESP32)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.green,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'ESP32?',
+                            style: TextStyle(color: Colors.white, fontSize: 10),
+                          ),
+                        ),
+                    ],
+                  ),
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 4),
+                        Text(
+                          '${device.remoteId}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textSecondary,
+                            fontFamily: 'monospace',
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: signalColor,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$signalText signal',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: signalColor,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  trailing: isConnecting
+                      ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              AppColors.primary,
+                            ),
+                          ),
+                        )
+                      : SizedBox(
+                          width: 90,
+                          child: ElevatedButton(
+                            onPressed: () => _connectToDevice(device),
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                            ),
+                            child: const Text('Connect'),
+                          ),
+                        ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
