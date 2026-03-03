@@ -307,7 +307,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(width: 6),
           Text(
-            isMLReady ? '🤖 ML-Based' : '⚙️ Threshold-Based',
+            isMLReady ? 'ML-Based' : 'Threshold-Based',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w600,

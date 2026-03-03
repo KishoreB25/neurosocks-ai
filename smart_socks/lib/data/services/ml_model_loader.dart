@@ -143,8 +143,8 @@ class MLModelLoader {
   /// Handles platform-specific asset loading
   Future<Uint8List> _loadModelBytes() async {
     try {
-      // Extract path without 'lib/assets/' prefix
-      final assetPath = MLConstants.modelPath.replaceFirst('lib/', '');
+      // Use the full asset path as declared in pubspec.yaml (lib/ prefix included)
+      final assetPath = MLConstants.modelPath;
       
       if (debugLogging) {
         debugPrint('📂 Loading asset: $assetPath');
