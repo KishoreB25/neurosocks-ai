@@ -249,6 +249,55 @@ class FirebaseFirestoreService {
 
   // ============== Real-time Listeners ==============
 
+  // ============== ML Predictions ==============
+
+  /// Save ML prediction to Firestore (user-specific)
+  Future<void> savePrediction({
+    required String userId,
+    required Map<String, dynamic> predictionData,
+  }) async {
+    try {
+      final timestamp = predictionData['timestamp'] ?? DateTime.now().toIso8601String();
+      final docId = DateTime.now().millisecondsSinceEpoch.toString();
+      await _firestore
+          .collection(predictionsCollection)
+          .doc(userId)
+          .collection('userPredictions')
+          .doc(docId)
+          .set({
+            ...predictionData,
+            'timestamp': timestamp,
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+    } catch (e) {
+      debugPrint('Save Prediction Error: $e');
+      rethrow;
+    }
+  }
+
+  /// Get predictions for user
+  Future<List<Map<String, dynamic>>> getPredictions({
+    required String userId,
+    int limit = 50,
+  }) async {
+    try {
+      final snapshot = await _firestore
+          .collection(predictionsCollection)
+          .doc(userId)
+          .collection('userPredictions')
+          .orderBy('createdAt', descending: true)
+          .limit(limit)
+          .get();
+
+      return snapshot.docs.map((doc) => doc.data()).toList();
+    } catch (e) {
+      debugPrint('Get Predictions Error: $e');
+      return [];
+    }
+  }
+
+  // ============== Real-time Listeners (streams) ==============
+
   /// Listen to user profile changes
   Stream<UserProfile?> userProfileStream(String userId) {
     return _firestore.collection(usersCollection).doc(userId).snapshots().map(

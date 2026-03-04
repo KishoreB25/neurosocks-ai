@@ -1,17 +1,26 @@
-// Calculates weighted risk scores using your defined weights (temp 30%, pressure 35%, circulation 20%, gait 15%). 
+// Calculates weighted risk scores using ML predictions (primary) with fallback to threshold-based logic
 // Tracks history for trend analysis.
 
+import 'package:flutter/foundation.dart';
 import '../models/sensor_reading.dart';
 import '../models/risk_score.dart';
 import '../../core/constants/sensor_constants.dart';
+import 'ml_risk_predictor.dart' show MLRiskPredictor;
 
 /// Calculates risk scores from sensor readings
-/// Uses weighted algorithm with temperature, pressure, circulation, and gait factors
+/// Primary: ML-based predictions | Fallback: Weighted algorithm (temp 30%, pressure 35%, circulation 20%, gait 15%)
 class RiskCalculator {
   // Singleton pattern
   static final RiskCalculator _instance = RiskCalculator._internal();
   factory RiskCalculator() => _instance;
-  RiskCalculator._internal();
+  RiskCalculator._internal() {
+    _mlPredictor = MLRiskPredictor();
+  }
+
+  // ML Integration
+  late final MLRiskPredictor _mlPredictor;
+  bool _mlReady = false;
+  static const bool debugML = true;
 
   // History for trend analysis
   final List<SensorReading> _readingHistory = [];
@@ -19,18 +28,69 @@ class RiskCalculator {
 
   // ============== Main Calculation ==============
 
+  /// Initialize ML model (call from app startup)
+  Future<void> initializeML() async {
+    try {
+      await _mlPredictor.initialize();
+      _mlReady = _mlPredictor.isReady;
+      if (debugML) {
+        debugPrint('✅ RiskCalculator: ML initialized - ready=$_mlReady');
+      }
+    } catch (e) {
+      if (debugML) {
+        debugPrint('⚠️ RiskCalculator: ML init failed - $e');
+      }
+      _mlReady = false;
+    }
+  }
+
   /// Calculate risk score from a sensor reading
+  /// Primary: ML prediction | Fallback: Threshold-based weighted algorithm
   RiskScore calculate(SensorReading reading) {
     // Add to history for trend analysis
     _addToHistory(reading);
 
-    // Calculate individual component risks
+    // Try ML prediction first
+    if (_mlReady) {
+      try {
+        final mlResult = _mlPredictor.predictFromReading(reading);
+        
+        if (mlResult.success) {
+          if (debugML) {
+            debugPrint('🎯 ML Prediction: ${mlResult.riskScore}% (${mlResult.riskLevel.name})');
+          }
+          
+          // Convert ML result to RiskScore format
+          // ML gives probability (0-1), convert to weighted components
+          final riskProbability = mlResult.riskProbability;
+          final factors = _getMLRiskFactors(mlResult.riskLevel);
+          
+          return RiskScore.fromComponents(
+            temperatureRisk: (riskProbability * 30).round(),      // 30% weight
+            pressureRisk: (riskProbability * 35).round(),         // 35% weight (highest)
+            circulationRisk: (riskProbability * 20).round(),      // 20% weight
+            gaitRisk: (riskProbability * 15).round(),             // 15% weight
+            factors: factors,
+            timestamp: reading.timestamp,
+          );
+        }
+      } catch (e) {
+        if (debugML) {
+          debugPrint('⚠️ ML prediction error: $e - using fallback');
+        }
+      }
+    }
+
+    // Fallback: Calculate threshold-based risk
+    if (debugML && _mlReady) {
+      debugPrint('⚠️ Falling back to threshold-based risk calculation');
+    }
+
     final tempRisk = _calculateTemperatureRisk(reading);
     final pressureRisk = _calculatePressureRisk(reading);
     final circRisk = _calculateCirculationRisk(reading);
     final gaitRisk = _calculateGaitRisk(reading);
 
-    // Identify contributing factors
     final factors = _identifyFactors(
       reading: reading,
       tempRisk: tempRisk,
@@ -39,7 +99,6 @@ class RiskCalculator {
       gaitRisk: gaitRisk,
     );
 
-    // Create risk score using factory
     return RiskScore.fromComponents(
       temperatureRisk: tempRisk,
       pressureRisk: pressureRisk,
@@ -48,6 +107,19 @@ class RiskCalculator {
       factors: factors,
       timestamp: reading.timestamp,
     );
+  }
+
+  /// Get risk factors based on ML risk level
+  List<String> _getMLRiskFactors(RiskLevel riskLevel) {
+    switch (riskLevel) {
+      case RiskLevel.low:
+        return ['Normal readings', 'Low risk detected'];
+      case RiskLevel.moderate:
+        return ['Moderate risk', 'Monitor closely', 'Sensor patterns indicate attention needed'];
+      case RiskLevel.high:
+      case RiskLevel.critical:
+        return ['High risk alert', 'Immediate attention recommended', 'Critical sensor anomaly detected'];
+    }
   }
 
   // ============== Temperature Risk ==============
@@ -459,4 +531,20 @@ class RiskCalculator {
 
   /// Get reading history
   List<SensorReading> get history => List.unmodifiable(_readingHistory);
+
+  // ============== ML Management ==============
+
+  /// Check if ML model is ready
+  bool get isMLReady => _mlReady;
+
+  /// Get ML predictor instance for testing/inspection
+  MLRiskPredictor get mlPredictor => _mlPredictor;
+
+  /// Dispose ML resources
+  Future<void> dispose() async {
+    await _mlPredictor.dispose();
+    if (debugML) {
+      debugPrint('✅ RiskCalculator disposed - ML resources released');
+    }
+  }
 }

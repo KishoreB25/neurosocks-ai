@@ -401,26 +401,13 @@ class ClassicBluetoothService {
       // ---- Battery Level (Byte 15) ----
       _batteryLevel = packet[15].clamp(0, 100);
 
-      // Placeholder IMU (not transmitted by ESP32)
-      final acc = AccelerometerData(
-        x: stepCount > 0 ? 0.5 : 0.0,
-        y: stepCount > 0 ? 0.3 : 0.0,
-        z: 9.8,
-      );
-      final gyro = GyroscopeData(
-        x: stepCount > 0 ? 5.0 : 0.5,
-        y: stepCount > 0 ? 3.0 : 0.5,
-        z: stepCount > 0 ? 2.0 : 0.5,
-      );
-
+      // IMU data not transmitted by ESP32 BLE - uses defaults
       final reading = SensorReading(
         timestamp: DateTime.now(),
         temperatures: temperatures,
         pressures: pressures,
         spO2: spO2,
         heartRate: heartRate,
-        accelerometer: acc,
-        gyroscope: gyro,
         stepCount: stepCount,
         batteryLevel: _batteryLevel,
         activityType: activityType,
