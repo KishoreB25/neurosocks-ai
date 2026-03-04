@@ -275,23 +275,143 @@ void maxCollectSamples() {
 
 // Compute HR (BPM) from IR buffer using peak detection
 // and SpO2 from RED/IR ratio
+// void maxCompute(float &spo2, uint16_t &hr) {
+//   int count = bufFull ? HR_BUF_SIZE : bufIdx;
+  
+//   // Need minimum 30 samples (~0.3 sec) for stable reading
+//   // Ideally 60+ samples (~0.6 sec) for accuracy
+//   if (count < 30) {
+//     spo2 = 0;
+//     hr = 0;
+//     static unsigned long lastMsg = 0;
+//     if (millis() - lastMsg > 1000) {  // Print every 1 sec instead of 3
+//       Serial.printf("[MAX] Warming up... %d/60 samples (hold finger on sensor)\n", count);
+//       lastMsg = millis();
+//     }
+//     return;
+//   }
+
+//   // --- Calculate DC (mean) and AC (peak-to-peak) ---
+//   uint32_t irSum = 0, redSum = 0;
+//   uint32_t irMin = 0xFFFFFFFF, irMax = 0;
+//   uint32_t redMin = 0xFFFFFFFF, redMax = 0;
+
+//   for (int i = 0; i < count; i++) {
+//     irSum  += irBuffer[i];
+//     redSum += redBuffer[i];
+//     if (irBuffer[i]  < irMin)  irMin  = irBuffer[i];
+//     if (irBuffer[i]  > irMax)  irMax  = irBuffer[i];
+//     if (redBuffer[i] < redMin) redMin = redBuffer[i];
+//     if (redBuffer[i] > redMax) redMax = redBuffer[i];
+//   }
+
+//   float irDC  = (float)irSum  / count;
+//   float redDC = (float)redSum / count;
+//   float irAC  = (float)(irMax  - irMin);
+//   float redAC = (float)(redMax - redMin);
+  
+//   // Debug output every 2 seconds
+//   static unsigned long lastDebug = 0;
+//   if (millis() - lastDebug > 2000) {
+//     Serial.printf("[MAX] irDC:%.0f redDC:%.0f irAC:%.0f redAC:%.0f ratio:%.2f AC/DC:%.3f samples:%d\n",
+//                    irDC, redDC, irAC, redAC, redDC/irDC, irAC/irDC, count);
+//     lastDebug = millis();
+//   }
+
+//   // --- ADAPTIVE Finger/Foot Detection (3-point check) ---
+  
+//   // Check 1: AC ripple (heartbeat pulsatile component)
+//   // Foot with 24mA LED: irAC typically 500-3000 (smaller ripple than finger due to larger sensor area)
+//   // No foot contact or poor contact: irAC < 200
+//   if (irAC < 200) {
+//     spo2 = 0;
+//     hr = 0;
+//     return;
+//   }
+
+//   // Check 2: DC signal baseline (light intensity)
+//   // Foot with calluses: irDC 2000-30000 (darker than finger, more light absorption)
+//   // Ambient only or lifted: irDC < 800
+//   if (irDC < 800) {
+//     spo2 = 0;
+//     hr = 0;
+//     return;
+//   }
+
+//   // Check 3: RED/IR ratio (blood absorption signature — foot is different from finger)
+//   // Foot: redDC typically 40-60% of irDC (more melanin absorption)
+//   // Valid range: 0.3-1.5 (wider than finger for foot variation)
+//   float ratio = redDC / irDC;
+//   if (ratio < 0.3 || ratio > 1.5) {
+//     spo2 = 0;
+//     hr = 0;
+//     return;
+//   }
+
+//   // --- SpO2 Calculation (FOOT-OPTIMIZED ratio-of-ratios formula) ---
+//   // For foot placement: skin has more melanin + different perfusion
+//   // Adjusted constants for foot vs finger
+//   if (irDC > 0 && redDC > 0 && irAC > 0 && redAC > 0) {
+//     float R = (redAC / redDC) / (irAC / irDC);
+//     // Foot-optimized formula: SpO2 = 105 - 20*R
+//     // (vs finger: 110 - 25*R)
+//     // Foot has higher melanin absorption, so R values are shifted
+//     spo2 = 105.0 - 20.0 * R;
+//     // Clamp to realistic range (70-100%)
+//     spo2 = constrain(spo2, 70.0, 100.0);
+//   } else {
+//     spo2 = 0;
+//   }
+
+//   // --- Heart Rate Calculation (FOOT-OPTIMIZED peak counting on IR signal) ---
+//   // Foot has weaker AC ripple due to larger sensor area → lower threshold
+//   int peaks = 0;
+//   bool above = false;
+//   float threshold = irDC + irAC * 0.2;  // LOWERED from 0.3 to 0.2 for foot
+//                                          // Foot peaks are shallower, need sensitive detection
+
+//   for (int i = 0; i < count; i++) {
+//     if (!above && irBuffer[i] > threshold) {
+//       above = true;
+//       peaks++;
+//     } else if (above && irBuffer[i] < irDC) {
+//       above = false;
+//     }
+//   }
+
+//   // Convert peaks to BPM
+//   // Sensor: 100 Hz → 4x averaging = 25 effective Hz
+//   // For foot, signal is smoother so this averaging rate works well
+//   float seconds = (float)count / 25.0;
+//   if (seconds > 0 && peaks > 0) {
+//     hr = (uint16_t)((float)peaks / seconds * 60.0);
+//     // Sanity check: realistic resting HR 40-100, activity 100-200 BPM
+//     // For foot placement at rest: expect 50-90 BPM (slightly lower than finger due to distance from heart)
+//     if (hr < 40 || hr > 200) {
+//       hr = 0;
+//       Serial.printf("[MAX] HR out of range (peaks=%d, time=%.2fs) — rejecting\n", peaks, seconds);
+//     }
+//   } else {
+//     hr = 0;
+//   }
+// }
+
 void maxCompute(float &spo2, uint16_t &hr) {
   int count = bufFull ? HR_BUF_SIZE : bufIdx;
-  
-  // Need minimum 30 samples (~0.3 sec) for stable reading
-  // Ideally 60+ samples (~0.6 sec) for accuracy
+
+  // --- Warmup check ---
   if (count < 30) {
     spo2 = 0;
     hr = 0;
     static unsigned long lastMsg = 0;
-    if (millis() - lastMsg > 1000) {  // Print every 1 sec instead of 3
-      Serial.printf("[MAX] Warming up... %d/60 samples (hold finger on sensor)\n", count);
+    if (millis() - lastMsg > 1000) {
+      Serial.printf("[MAX] Warming up... %d/60 samples\n", count);
       lastMsg = millis();
     }
     return;
   }
 
-  // --- Calculate DC (mean) and AC (peak-to-peak) ---
+  // -------- Compute DC & AC --------
   uint32_t irSum = 0, redSum = 0;
   uint32_t irMin = 0xFFFFFFFF, irMax = 0;
   uint32_t redMin = 0xFFFFFFFF, redMax = 0;
@@ -305,70 +425,48 @@ void maxCompute(float &spo2, uint16_t &hr) {
     if (redBuffer[i] > redMax) redMax = redBuffer[i];
   }
 
-  float irDC  = (float)irSum  / count;
+  float irDC  = (float)irSum / count;
   float redDC = (float)redSum / count;
-  float irAC  = (float)(irMax  - irMin);
+  float irAC  = (float)(irMax - irMin);
   float redAC = (float)(redMax - redMin);
-  
-  // Debug output every 2 seconds
-  static unsigned long lastDebug = 0;
-  if (millis() - lastDebug > 2000) {
-    Serial.printf("[MAX] irDC:%.0f redDC:%.0f irAC:%.0f redAC:%.0f ratio:%.2f AC/DC:%.3f samples:%d\n",
-                   irDC, redDC, irAC, redAC, redDC/irDC, irAC/irDC, count);
-    lastDebug = millis();
-  }
 
-  // --- ADAPTIVE Finger/Foot Detection (3-point check) ---
-  
-  // Check 1: AC ripple (heartbeat pulsatile component)
-  // Foot with 24mA LED: irAC typically 500-3000 (smaller ripple than finger due to larger sensor area)
-  // No foot contact or poor contact: irAC < 200
-  if (irAC < 200) {
+  // -------- STRONG CONTACT DETECTION --------
+
+  // 1️⃣ Strong DC signal required (real skin contact)
+  if (irDC < 3000) {   // increased threshold
     spo2 = 0;
     hr = 0;
+    Serial.println("[MAX] No contact (DC too low)");
     return;
   }
 
-  // Check 2: DC signal baseline (light intensity)
-  // Foot with calluses: irDC 2000-30000 (darker than finger, more light absorption)
-  // Ambient only or lifted: irDC < 800
-  if (irDC < 800) {
+  // 2️⃣ AC ripple must exist (real heartbeat pulse)
+  float acdcRatio = irAC / irDC;
+  if (acdcRatio < 0.02) {  // at least 2% ripple
     spo2 = 0;
     hr = 0;
+    Serial.println("[MAX] No real pulse ripple detected");
     return;
   }
 
-  // Check 3: RED/IR ratio (blood absorption signature — foot is different from finger)
-  // Foot: redDC typically 40-60% of irDC (more melanin absorption)
-  // Valid range: 0.3-1.5 (wider than finger for foot variation)
-  float ratio = redDC / irDC;
-  if (ratio < 0.3 || ratio > 1.5) {
+  // 3️⃣ RED/IR balance sanity check
+  float ratioCheck = redDC / irDC;
+  if (ratioCheck < 0.4 || ratioCheck > 1.2) {
     spo2 = 0;
     hr = 0;
+    Serial.println("[MAX] Signal ratio invalid");
     return;
   }
 
-  // --- SpO2 Calculation (FOOT-OPTIMIZED ratio-of-ratios formula) ---
-  // For foot placement: skin has more melanin + different perfusion
-  // Adjusted constants for foot vs finger
-  if (irDC > 0 && redDC > 0 && irAC > 0 && redAC > 0) {
-    float R = (redAC / redDC) / (irAC / irDC);
-    // Foot-optimized formula: SpO2 = 105 - 20*R
-    // (vs finger: 110 - 25*R)
-    // Foot has higher melanin absorption, so R values are shifted
-    spo2 = 105.0 - 20.0 * R;
-    // Clamp to realistic range (70-100%)
-    spo2 = constrain(spo2, 70.0, 100.0);
-  } else {
-    spo2 = 0;
-  }
+  // -------- SpO2 Calculation --------
+  float R = (redAC / redDC) / (irAC / irDC);
+  spo2 = 105.0 - 20.0 * R;
+  spo2 = constrain(spo2, 70.0, 100.0);
 
-  // --- Heart Rate Calculation (FOOT-OPTIMIZED peak counting on IR signal) ---
-  // Foot has weaker AC ripple due to larger sensor area → lower threshold
+  // -------- Heart Rate Calculation --------
   int peaks = 0;
   bool above = false;
-  float threshold = irDC + irAC * 0.2;  // LOWERED from 0.3 to 0.2 for foot
-                                         // Foot peaks are shallower, need sensitive detection
+  float threshold = irDC + irAC * 0.2;
 
   for (int i = 0; i < count; i++) {
     if (!above && irBuffer[i] > threshold) {
@@ -379,18 +477,10 @@ void maxCompute(float &spo2, uint16_t &hr) {
     }
   }
 
-  // Convert peaks to BPM
-  // Sensor: 100 Hz → 4x averaging = 25 effective Hz
-  // For foot, signal is smoother so this averaging rate works well
   float seconds = (float)count / 25.0;
-  if (seconds > 0 && peaks > 0) {
+  if (seconds > 0 && peaks > 1) {
     hr = (uint16_t)((float)peaks / seconds * 60.0);
-    // Sanity check: realistic resting HR 40-100, activity 100-200 BPM
-    // For foot placement at rest: expect 50-90 BPM (slightly lower than finger due to distance from heart)
-    if (hr < 40 || hr > 200) {
-      hr = 0;
-      Serial.printf("[MAX] HR out of range (peaks=%d, time=%.2fs) — rejecting\n", peaks, seconds);
-    }
+    if (hr < 40 || hr > 200) hr = 0;
   } else {
     hr = 0;
   }
@@ -422,15 +512,6 @@ void mpuReadAccel(float &ax, float &ay, float &az) {
   ax = (float)raw_x / 8192.0 * 9.81;
   ay = (float)raw_y / 8192.0 * 9.81;
   az = (float)raw_z / 8192.0 * 9.81;
-
-  // Debug output every 2 seconds (on send cycle only)
-  static unsigned long lastDebugAccel = 0;
-  if (millis() - lastDebugAccel > 2000) {
-    float mag = sqrt(ax * ax + ay * ay + az * az);
-    Serial.printf("[MPU_ACCEL] X:%.2f Y:%.2f Z:%.2f | Mag:%.2f (raw: %d, %d, %d)\n",
-                   ax, ay, az, mag, raw_x, raw_y, raw_z);
-    lastDebugAccel = millis();
-  }
 }
 
 // Simple step detection: magnitude peak crossing
@@ -470,31 +551,21 @@ void mpuClassifyActivity() {
   }
 
   float avgMag = accelMagSum / accelSamples;
+
+  // Deviation from gravity (~9.81 m/s²)
+  // Tightened thresholds to better distinguish activity levels:
+  // 0.15: barely any motion (sleeping/very still)
+  // 0.35: small movements (sitting, light breathing)
+  // 0.55: postural sway (standing)
+  // 0.85: active movement (walking)
+  // >0.85: high energy (running/exercising)
   float dev = abs(avgMag - 9.81);
 
-  // RELAXED thresholds for foot placement (not hand-held):
-  // Foot naturally has lower vibration than hand devices
-  // 0.08: barely any motion (foot resting on ground, steady)
-  // 0.20: small shifts (sitting with foot on ground, slight movement)
-  // 0.40: postural sway + ground contact (standing with weight shift)
-  // 0.60: clear walking pattern with step impact
-  // >0.60: running/jumping with high-impact
-  
-  if (dev < 0.08)      activityType = 0;  // rest (foot static on ground)
-  else if (dev < 0.20) activityType = 1;  // sitting (foot at rest, minor shifts)
-  else if (dev < 0.40) activityType = 2;  // standing (weight on foot, postural sway)
-  else if (dev < 0.60) activityType = 3;  // walking (step impacts detected)
-  else                  activityType = 4;  // running (high-energy impacts)
-
-  // Debug: print activity classification
-  Serial.printf("[MPU] avgMag: %.3f m/s² | dev: %.3f | Activity: %s (%d)\n",
-                 avgMag, dev,
-                 (activityType == 0) ? "REST" :
-                 (activityType == 1) ? "SITTING" :
-                 (activityType == 2) ? "STANDING" :
-                 (activityType == 3) ? "WALKING" :
-                 (activityType == 4) ? "RUNNING" : "???",
-                 activityType);
+  if (dev < 0.15)      activityType = 0;  // rest
+  else if (dev < 0.35) activityType = 1;  // sitting
+  else if (dev < 0.55) activityType = 2;  // standing
+  else if (dev < 0.85) activityType = 3;  // walking
+  else                  activityType = 4;  // running
 
   // Reset for next cycle
   accelMagSum  = 0;
@@ -507,7 +578,7 @@ void setup() {
   Serial.begin(115200);
   SerialBT.begin("NeuroSock");
 
-  Wire.begin(21, 22);
+Wire.begin(21, 22);
 
   maxInit();
   mpuInit();
@@ -552,10 +623,7 @@ void loop() {
 
   /* -------- SENSOR READINGS -------- */
 
-  // -- MPU6050 → activity classification & step summary --
-  mpuClassifyActivity();
-  Serial.printf("[SEND CYCLE] StepCount: %d | Activity: %d | Battery: %d%%\n",
-                 stepCount, activityType, batteryLevel);
+  // -- Temperatures (1 physical NTC on ADC1, 3 derived) --
   float temp[4];
   #if HAS_TEMP_SENSORS
     // Read only Heel (GPIO36) — the only working sensor
@@ -602,16 +670,8 @@ void loop() {
   uint16_t heartRate = 0;
   maxCompute(spo2, heartRate);
 
-  // -- MPU6050 → activity classification (already done in loop) --
-  // activityType was classified in the send-cycle summary above
-  // Just verify it before encoding
-  Serial.printf("[VERIFY] Final Activity to be sent: %d (%s)\n",
-                 activityType,
-                 (activityType == 0) ? "REST" :
-                 (activityType == 1) ? "SITTING" :
-                 (activityType == 2) ? "STANDING" :
-                 (activityType == 3) ? "WALKING" :
-                 (activityType == 4) ? "RUNNING" : "???");
+  // -- MPU6050 → activity classification --
+  mpuClassifyActivity();
 
   /* -------- PACK 16-BYTE PAYLOAD -------- */
 
@@ -649,32 +709,6 @@ void loop() {
   SerialBT.write(payload, 16);
 
   /* -------- DEBUG -------- */
-  
-  // Before sending, show human-readable summary
-  Serial.println("═══════════════════════════════════════════════════════");
-  Serial.printf("📊 COMPLETE SENSOR SUMMARY (TX in 2s)\n");
-  Serial.printf("🌡️  Temp: Heel=%.1f°C Ball*=%.1f°C Arch*=%.1f°C Toe*=%.1f°C\n",
-                 temp[0], temp[1], temp[2], temp[3]);
-  Serial.printf("📈 Pres: Heel=%.1f kPa Ball=%.1f kPa Arch=%.1f kPa Toe=%.1f kPa\n",
-                 pressure[0], pressure[1], pressure[2], pressure[3]);
-  Serial.printf("❤️  SpO2: %.1f%% | HR: %d BPM\n", spo2, heartRate);
-  Serial.printf("👟 Steps: %d | Activity: %s (%d) | Battery: %d%%\n",
-                 stepCount,
-                 (activityType == 0) ? "REST" :
-                 (activityType == 1) ? "SITTING" :
-                 (activityType == 2) ? "STANDING" :
-                 (activityType == 3) ? "WALKING" :
-                 (activityType == 4) ? "RUNNING" : "???",
-                 activityType,
-                 batteryLevel);
-  Serial.printf("📦 Payload[16]: ");
-  for (int i = 0; i < 16; i++) {
-    Serial.printf("%02X ", payload[i]);
-    if ((i + 1) % 4 == 0) Serial.print("| ");
-  }
-  Serial.println();
-  Serial.println("═══════════════════════════════════════════════════════");
-
   Serial.printf("SpO2: %.1f%% | HR: %d BPM | Steps: %d | Activity: %d | "
                 "P: [%.1f, %.1f, %.1f, %.1f] kPa\n",
                 spo2, heartRate, stepCount, activityType,
