@@ -49,6 +49,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // IMPORTANT: Set the current user ID in SensorProvider
       // This is required for saving sensor data to Firestore
       sensorProvider.setCurrentUser(authProvider.currentUserId!);
+
+      // Set user in RiskProvider for Firestore alert & prediction storage
+      final riskProvider = context.read<RiskProvider>();
+      riskProvider.setCurrentUser(authProvider.currentUserId!);
     }
 
     // 2. Start sensor monitoring (real BLE mode - no auto-connect)
