@@ -6,9 +6,12 @@ import 'data/models/user_profile.dart';
 import 'providers/sensor_provider.dart';
 import 'providers/risk_provider.dart';
 import 'providers/user_provider.dart';
-import 'ui/screens/auth/welcome_screen.dart';
-import 'ui/screens/auth/login_screen.dart';
-import 'ui/screens/auth/profile_setup_screen.dart';
+import 'providers/firebase/firebase_auth_provider.dart';
+import 'providers/firebase/firebase_sync_provider.dart';
+import 'providers/firebase/firebase_notifications_provider.dart';
+import 'ui/screens/auth/landing_screen.dart';
+import 'ui/screens/auth/sign_in_screen.dart';
+import 'ui/screens/auth/sign_up_screen.dart';
 import 'ui/screens/home/dashboard_screen.dart';
 import 'ui/screens/home/sensors_screen.dart';
 import 'ui/screens/home/alerts_screen.dart';
@@ -33,9 +36,18 @@ class SmartSocksApp extends StatelessWidget {
         
         // Risk provider (manages risk calculations, alerts)
         ChangeNotifierProvider(create: (_) => RiskProvider()),
+        
+        // 🔥 Firebase Authentication Provider
+        ChangeNotifierProvider(create: (_) => FirebaseAuthProvider()),
+        
+        // 🔥 Firebase Sync Provider
+        ChangeNotifierProvider(create: (_) => FirebaseSyncProvider()),
+        
+        // 🔥 Firebase Notifications Provider
+        ChangeNotifierProvider(create: (_) => FirebaseNotificationsProvider()),
       ],
-      child: Consumer<UserProvider>(
-        builder: (context, userProvider, _) {
+      child: Consumer2<UserProvider, FirebaseAuthProvider>(
+        builder: (context, userProvider, authProvider, _) {
           return MaterialApp(
             title: AppStrings.appName,
             debugShowCheckedModeBanner: false,
@@ -46,13 +58,13 @@ class SmartSocksApp extends StatelessWidget {
             themeMode: _mapThemeMode(userProvider.userProfile?.settings.themeMode),
             
             // Initial route based on login status
-            initialRoute: _getInitialRoute(userProvider),
+            initialRoute: _getInitialRoute(context),
             
             // Named routes
             routes: {
-              '/welcome': (context) => const WelcomeScreen(),
-              '/login': (context) => const LoginScreen(),
-              '/profile-setup': (context) => const ProfileSetupScreen(),
+              '/landing': (context) => const LandingScreen(),
+              '/sign-in': (context) => const SignInScreen(),
+              '/sign-up': (context) => const SignUpScreen(),
               '/dashboard': (context) => const DashboardScreen(),
               '/sensors': (context) => const SensorsScreen(),
               '/alerts': (context) => const AlertsScreen(),
@@ -62,7 +74,7 @@ class SmartSocksApp extends StatelessWidget {
             // Handle unknown routes
             onUnknownRoute: (settings) {
               return MaterialPageRoute(
-                builder: (context) => const WelcomeScreen(),
+                builder: (context) => const LandingScreen(),
               );
             },
           );
@@ -72,24 +84,16 @@ class SmartSocksApp extends StatelessWidget {
   }
 
   /// Determine initial route based on user state
-  String _getInitialRoute(UserProvider userProvider) {
-    // If loading, show welcome (will redirect after load)
-    if (userProvider.isLoading) {
-      return '/welcome';
-    }
+  String _getInitialRoute(BuildContext context) {
+    final authProvider = context.read<FirebaseAuthProvider>();
     
-    // If logged in and onboarding complete, go to dashboard
-    if (userProvider.isLoggedIn && userProvider.onboardingComplete) {
+    // If user is logged in, go to dashboard
+    if (authProvider.isLoggedIn) {
       return '/dashboard';
     }
     
-    // If logged in but profile incomplete, go to profile setup
-    if (userProvider.isLoggedIn && !userProvider.onboardingComplete) {
-      return '/profile-setup';
-    }
-    
-    // Otherwise, show welcome screen
-    return '/welcome';
+    // Otherwise, show landing screen
+    return '/landing';
   }
 
   /// Map user_profile ThemeMode to Flutter ThemeMode

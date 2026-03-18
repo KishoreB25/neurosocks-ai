@@ -1,5 +1,6 @@
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 import '../models/sensor_reading.dart';
 import '../models/risk_score.dart';
 import '../models/alert.dart';
@@ -62,7 +63,7 @@ class StorageService {
 
       _isInitialized = true;
     } catch (e) {
-      print('StorageService initialization error: $e');
+      debugPrint('StorageService initialization error: $e');
       rethrow;
     }
   }
@@ -348,6 +349,18 @@ class StorageService {
   /// Get paired device name
   String? getPairedDeviceName() {
     return _prefs?.getString(_keyDeviceName);
+  }
+
+  // ============== Device Connection Persistence ==============
+
+  /// Save last connected device ID
+  Future<void> saveLastConnectedDeviceId(String deviceId) async {
+    await _prefs?.setString('last_connected_device_id', deviceId);
+  }
+
+  /// Get last connected device ID
+  String? getLastConnectedDeviceId() {
+    return _prefs?.getString('last_connected_device_id');
   }
 
   // ============== Storage Management ==============

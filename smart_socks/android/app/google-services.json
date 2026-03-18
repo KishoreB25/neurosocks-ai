@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "835854512718",
+    "project_id": "smart-socks-2d556",
+    "storage_bucket": "smart-socks-2d556.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:835854512718:android:71f192aa54644f7064091f",
+        "android_client_info": {
+          "package_name": "com.example.smart_socks"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDtVbeMq6Tp-Z-T0ugPDGCvPt1o9EDb6Ew"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

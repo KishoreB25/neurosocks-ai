@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow authenticated users to read/write their own user profile
+    match /users/{userId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own sensor readings
+    match /sensorReadings/{userId}/readings/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own risk scores
+    match /riskScores/{userId}/scores/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own alerts
+    match /alerts/{userId}/userAlerts/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own daily summaries
+    match /dailySummaries/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own tokens
+    match /tokens/{userId}/deviceTokens/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own notifications
+    match /notifications/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own activity logs
+    match /activityLogs/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own device data
+    match /deviceData/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own health metrics
+    match /healthMetrics/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own user settings
+    match /userSettings/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own reports
+    match /reports/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Allow authenticated users to read/write their own predictions
+    match /predictions/{userId}/{document=**} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Deny everything else by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

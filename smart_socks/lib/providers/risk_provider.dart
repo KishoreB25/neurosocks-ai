@@ -1,4 +1,6 @@
 // Processes readings → risk scores, manages alerts, daily summaries
+// ✅ Phase 3: ML Integration - Uses ML predictions with threshold fallback
+// ✅ Firestore: Alerts & predictions stored user-specific
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
@@ -8,12 +10,39 @@ import '../data/models/alert.dart';
 import '../data/services/risk_calculator.dart';
 import '../data/services/alert_service.dart';
 import '../data/services/storage_service.dart';
+import '../data/services/firebase/firebase_firestore_service.dart';
 
 /// Provider for managing risk calculations and alerts
 class RiskProvider extends ChangeNotifier {
+  // Singleton pattern - ensure only one instance exists globally
+  static final RiskProvider _instance = RiskProvider._internal();
+  
+  factory RiskProvider() {
+    return _instance;
+  }
+  
+  RiskProvider._internal() {
+    // Listen to alert stream
+    _alertSubscription = _alertService.alertStream.listen(_onNewAlert);
+    
+    // Load initial data
+    _loadInitialData();
+    
+    // Initialize ML model asynchronously
+    _initializeML();
+  }
+  
   final RiskCalculator _riskCalculator = RiskCalculator();
   final AlertService _alertService = AlertService();
   final StorageService _storageService = StorageService();
+  final FirebaseFirestoreService _firestoreService = FirebaseFirestoreService();
+
+  // User context for Firestore
+  String? _currentUserId;
+
+  // ML status tracking
+  bool _mlInitialized = false;
+  String _mlStatus = 'Initializing...';
 
   // Current state
   RiskScore? _currentRiskScore;
@@ -34,13 +63,7 @@ class RiskProvider extends ChangeNotifier {
 
   // ============== Constructor ==============
 
-  RiskProvider() {
-    // Listen to alert stream
-    _alertSubscription = _alertService.alertStream.listen(_onNewAlert);
-    
-    // Load initial data
-    _loadInitialData();
-  }
+  // Removed legacy constructor - now using singleton factory pattern
 
   // ============== Getters ==============
 
@@ -68,6 +91,25 @@ class RiskProvider extends ChangeNotifier {
   // Alert stats
   AlertStats get alertStats => _alertService.getStats();
 
+  // ML Status
+  bool get mlInitialized => _mlInitialized;
+  String get mlStatus => _mlStatus;
+  bool get isMLReady => _riskCalculator.isMLReady;
+
+  // ============== User Context ==============
+
+  /// Set the current user ID for Firestore operations
+  void setCurrentUser(String userId) {
+    _currentUserId = userId;
+    // Load alerts from Firestore for this user
+    _loadAlertsFromFirestore();
+  }
+
+  /// Clear user context on logout
+  void clearCurrentUser() {
+    _currentUserId = null;
+  }
+
   // ============== Risk Calculation ==============
 
   /// Process a sensor reading and calculate risk
@@ -86,13 +128,25 @@ class RiskProvider extends ChangeNotifier {
     // Save to storage (async)
     _storageService.saveRiskScore(riskScore);
 
+    // Save to Firestore if user is logged in
+    if (_currentUserId != null) {
+      unawaited(_firestoreService.saveRiskScore(
+        userId: _currentUserId!,
+        riskScore: riskScore,
+      ));
+    }
+
     // Check for alerts
     final newAlerts = _alertService.checkForAlerts(reading);
     
-    // Save any new alerts
+    // Save any new alerts (local + Firestore)
     for (final alert in newAlerts) {
       _storageService.saveAlert(alert);
+      _saveAlertToFirestore(alert);
     }
+
+    // Save ML prediction to Firestore
+    _savePredictionToFirestore(riskScore, reading);
 
     // Update today's summary
     _updateTodaySummary(riskScore);
@@ -323,10 +377,114 @@ class RiskProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ============== ML Initialization ==============
+
+  /// Initialize ML model asynchronously (called on startup)
+  void _initializeML() {
+    _mlStatus = 'Loading ML model...';
+    notifyListeners();
+
+    // Run ML initialization in background
+    _riskCalculator.initializeML().then((_) {
+      _mlInitialized = true;
+      _mlStatus = 'ML Ready: ${_riskCalculator.isMLReady}';
+      
+      if (kDebugMode) {
+        debugPrint('✅ RiskProvider: ML initialized successfully');
+      }
+      
+      notifyListeners();
+    }).catchError((error) {
+      _mlInitialized = false;
+      _mlStatus = 'ML Init Failed: $error';
+      
+      if (kDebugMode) {
+        debugPrint('⚠️ RiskProvider: ML init failed - $error');
+      }
+      
+      notifyListeners();
+    });
+  }
+
+  // ============== Firestore Operations ==============
+
+  /// Save alert to Firestore (user-specific)
+  Future<void> _saveAlertToFirestore(Alert alert) async {
+    if (_currentUserId == null) return;
+    try {
+      await _firestoreService.saveAlert(
+        userId: _currentUserId!,
+        alert: alert,
+      );
+      debugPrint('💾 Alert saved to Firestore: ${alert.title}');
+    } catch (e) {
+      debugPrint('❌ Firestore alert save error: $e');
+    }
+  }
+
+  /// Save ML prediction to Firestore (user-specific)
+  Future<void> _savePredictionToFirestore(RiskScore riskScore, SensorReading reading) async {
+    if (_currentUserId == null) return;
+    try {
+      await _firestoreService.savePrediction(
+        userId: _currentUserId!,
+        predictionData: {
+          'timestamp': riskScore.timestamp.toIso8601String(),
+          'overallScore': riskScore.overallScore,
+          'riskLevel': riskScore.riskLevel.name,
+          'temperatureRisk': riskScore.temperatureRisk,
+          'pressureRisk': riskScore.pressureRisk,
+          'circulationRisk': riskScore.circulationRisk,
+          'gaitRisk': riskScore.gaitRisk,
+          'factors': riskScore.factors,
+          'recommendations': riskScore.recommendations,
+          'mlBased': _riskCalculator.isMLReady,
+          'sensorSnapshot': {
+            'temperatures': reading.temperatures,
+            'pressures': reading.pressures,
+            'spO2': reading.spO2,
+            'heartRate': reading.heartRate,
+            'stepCount': reading.stepCount,
+          },
+        },
+      );
+      debugPrint('💾 Prediction saved to Firestore');
+    } catch (e) {
+      debugPrint('❌ Firestore prediction save error: $e');
+    }
+  }
+
+  /// Load alerts from Firestore when user logs in
+  Future<void> _loadAlertsFromFirestore() async {
+    if (_currentUserId == null) return;
+    try {
+      final firestoreAlerts = await _firestoreService.getAlerts(
+        userId: _currentUserId!,
+        limit: 50,
+      );
+
+      if (firestoreAlerts.isNotEmpty) {
+        // Merge Firestore alerts into AlertService (avoid duplicates by ID)
+        final existingIds = _alertService.alerts.map((a) => a.id).toSet();
+        for (final alert in firestoreAlerts) {
+          if (!existingIds.contains(alert.id)) {
+            _alertService.addAlert(alert);
+          }
+        }
+        _refreshAlerts();
+        notifyListeners();
+        debugPrint('📥 Loaded ${firestoreAlerts.length} alerts from Firestore');
+      }
+    } catch (e) {
+      debugPrint('❌ Firestore alerts load error: $e');
+    }
+  }
+
   @override
   void dispose() {
     _alertSubscription?.cancel();
     _alertService.dispose();
+    _riskCalculator.dispose();  // Cleanup ML resources
     super.dispose();
   }
 }

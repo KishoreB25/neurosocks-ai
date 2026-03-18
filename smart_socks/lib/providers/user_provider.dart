@@ -5,10 +5,12 @@ import 'package:flutter/material.dart' hide ThemeMode;
 import 'package:flutter/material.dart' as material show ThemeMode;
 import '../data/models/user_profile.dart';
 import '../data/services/storage_service.dart';
+import '../data/services/firebase/firebase_firestore_service.dart';
 
 /// Provider for managing user profile and app settings
 class UserProvider extends ChangeNotifier {
   final StorageService _storageService = StorageService();
+  final FirebaseFirestoreService _firestoreService = FirebaseFirestoreService();
 
   // User profile
   UserProfile? _userProfile;
@@ -43,7 +45,7 @@ class UserProvider extends ChangeNotifier {
   bool get hasDevicePaired => _pairedDeviceId != null;
 
   // User info shortcuts
-  String get userName => _userProfile?.name ?? 'User';
+  String get userName => _userProfile?.displayName ?? 'User';
   String get userEmail => _userProfile?.email ?? '';
   int? get userAge => _userProfile?.age;
   DiabetesType? get diabetesType => _userProfile?.diabetesType;
@@ -96,11 +98,49 @@ class UserProvider extends ChangeNotifier {
 
   // ============== Profile Management ==============
 
+  /// Sync user profile from Firestore
+  Future<void> syncFromFirestore(String userId) async {
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      final profile = await _firestoreService.getUserProfile(userId);
+      if (profile != null) {
+        _userProfile = profile;
+        _isLoggedIn = true;
+        await _storageService.saveUserProfile(profile);
+        
+        // Notify sensor provider about current user for Firestore sync
+        // This allows sensor data to be automatically saved to Firestore
+      }
+    } catch (e) {
+      debugPrint('Error syncing from Firestore: $e');
+    }
+
+    _isLoading = false;
+    notifyListeners();
+  }
+
   /// Create or update user profile
   Future<void> saveProfile(UserProfile profile) async {
     _userProfile = profile;
     _isLoggedIn = true;
+    
+    // Save locally
     await _storageService.saveUserProfile(profile);
+    
+    // Save to Firestore if it has an ID (usually the UID)
+    if (profile.id.isNotEmpty) {
+      try {
+        await _firestoreService.saveUserProfile(
+          userId: profile.id,
+          profile: profile,
+        );
+      } catch (e) {
+        debugPrint('Error saving to Firestore: $e');
+      }
+    }
+    
     notifyListeners();
   }
 
@@ -109,6 +149,10 @@ class UserProvider extends ChangeNotifier {
     String? name,
     int? age,
     DiabetesType? diabetesType,
+    int? diabetesYears,
+    String? phone,
+    String? emergencyContactName,
+    String? emergencyContactPhone,
     HealthInfo? healthInfo,
     UserSettings? settings,
   }) async {
@@ -118,11 +162,28 @@ class UserProvider extends ChangeNotifier {
       name: name,
       age: age,
       diabetesType: diabetesType,
+      diabetesYears: diabetesYears,
+      phone: phone,
+      emergencyContactName: emergencyContactName,
+      emergencyContactPhone: emergencyContactPhone,
       healthInfo: healthInfo,
       settings: settings,
+      updatedAt: DateTime.now(),
     );
 
+    // Save locally
     await _storageService.saveUserProfile(_userProfile!);
+    
+    // Save to Firestore
+    try {
+      await _firestoreService.saveUserProfile(
+        userId: _userProfile!.id,
+        profile: _userProfile!,
+      );
+    } catch (e) {
+      debugPrint('Error updating Firestore: $e');
+    }
+
     notifyListeners();
   }
 
@@ -161,8 +222,24 @@ class UserProvider extends ChangeNotifier {
   Future<void> updateHealthInfo(HealthInfo healthInfo) async {
     if (_userProfile == null) return;
 
-    _userProfile = _userProfile!.copyWith(healthInfo: healthInfo);
+    _userProfile = _userProfile!.copyWith(
+      healthInfo: healthInfo,
+      updatedAt: DateTime.now(),
+    );
+    
+    // Save locally
     await _storageService.saveUserProfile(_userProfile!);
+    
+    // Save to Firestore
+    try {
+      await _firestoreService.saveUserProfile(
+        userId: _userProfile!.id,
+        profile: _userProfile!,
+      );
+    } catch (e) {
+      debugPrint('Error updating health info in Firestore: $e');
+    }
+    
     notifyListeners();
   }
 
@@ -189,8 +266,24 @@ class UserProvider extends ChangeNotifier {
   Future<void> updateSettings(UserSettings settings) async {
     if (_userProfile == null) return;
 
-    _userProfile = _userProfile!.copyWith(settings: settings);
+    _userProfile = _userProfile!.copyWith(
+      settings: settings,
+      updatedAt: DateTime.now(),
+    );
+    
+    // Save locally
     await _storageService.saveUserProfile(_userProfile!);
+    
+    // Save to Firestore
+    try {
+      await _firestoreService.saveUserProfile(
+        userId: _userProfile!.id,
+        profile: _userProfile!,
+      );
+    } catch (e) {
+      debugPrint('Error updating settings in Firestore: $e');
+    }
+    
     notifyListeners();
   }
 

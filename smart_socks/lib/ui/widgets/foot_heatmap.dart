@@ -61,7 +61,7 @@ class FootHeatmap extends StatelessWidget {
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Text(
-                footData?.side == FootSide.left ? 'LEFT' : 'RIGHT',
+                'FOOT',
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 10,
@@ -395,6 +395,36 @@ class DualFootHeatmap extends StatelessWidget {
               : null,
         ),
       ],
+    );
+  }
+}
+
+/// Centered single-foot heatmap (for single-leg ESP32 setup)
+class SingleFootHeatmap extends StatelessWidget {
+  final FootData? footData;
+  final HeatmapMode mode;
+  final double footSize;
+  final void Function(FootZone zone)? onZoneTap;
+
+  const SingleFootHeatmap({
+    super.key,
+    this.footData,
+    this.mode = HeatmapMode.temperature,
+    this.footSize = 180,
+    this.onZoneTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: FootHeatmap(
+        footData: footData,
+        mode: mode,
+        size: footSize,
+        showLabels: true,
+        showValues: true,
+        onZoneTap: onZoneTap,
+      ),
     );
   }
 }

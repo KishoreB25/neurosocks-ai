@@ -5,6 +5,7 @@ import '../../../core/constants/app_strings.dart';
 import '../../../data/models/user_profile.dart';
 import '../../../providers/user_provider.dart';
 import '../../../providers/sensor_provider.dart';
+import 'classic_bt_scan_screen.dart';
 
 /// Settings and profile screen
 class SettingsScreen extends StatelessWidget {
@@ -13,9 +14,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-      ),
+      appBar: AppBar(title: const Text('Settings')),
       body: Consumer2<UserProvider, SensorProvider>(
         builder: (context, userProvider, sensorProvider, _) {
           return ListView(
@@ -67,9 +66,7 @@ class SettingsScreen extends StatelessWidget {
             radius: 28,
             backgroundColor: AppColors.primary.withValues(alpha: 0.1),
             child: Text(
-              provider.userName.isNotEmpty
-                  ? provider.userName[0].toUpperCase()
-                  : '?',
+              provider.userName.isNotEmpty ? provider.userName[0].toUpperCase() : '?',
               style: TextStyle(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
@@ -87,17 +84,124 @@ class SettingsScreen extends StatelessWidget {
         ),
         if (profile != null) ...[
           const Divider(),
-          _buildInfoRow('Age', '${profile.age ?? 0} years'),
-          _buildInfoRow('Diabetes Type', profile.diabetesType?.displayName ?? 'Not set'),
-          _buildInfoRow('Years with Diabetes', '${profile.diabetesYears ?? 0} years'),
+          _buildInfoRow('Email', profile.email),
+          if (profile.age != null && profile.age! > 0)
+            _buildInfoRow('Age', '${profile.age} years'),
+          if (profile.diabetesType != null)
+            _buildInfoRow('Diabetes Type', profile.diabetesType!.displayName),
+          if (profile.diabetesYears != null && profile.diabetesYears! > 0)
+            _buildInfoRow(
+              'Years with Diabetes',
+              '${profile.diabetesYears} years',
+            ),
+          if (profile.phone != null && profile.phone!.isNotEmpty)
+            _buildInfoRow('Phone', profile.phone!),
+          // Health Info section
+          if (profile.healthInfo != null) ...[
+            const SizedBox(height: 12),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                'Health Information',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            _buildHealthInfoItem(
+              'Neuropathy',
+              profile.healthInfo!.hasNeuropathy,
+            ),
+            _buildHealthInfoItem(
+              'Peripheral Arterial Disease (PAD)',
+              profile.healthInfo!.hasPAD,
+            ),
+            _buildHealthInfoItem(
+              'Previous Foot Ulcer',
+              profile.healthInfo!.hasPreviousUlcer,
+            ),
+            _buildHealthInfoItem(
+              'Hypertension',
+              profile.healthInfo!.hasHypertension,
+            ),
+          ],
+          // Emergency Contact Info
+          if (profile.emergencyContactName != null ||
+              profile.emergencyContactPhone != null) ...[
+            const SizedBox(height: 12),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                'Emergency Contact',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            if (profile.emergencyContactName != null &&
+                profile.emergencyContactName!.isNotEmpty)
+              _buildInfoRow('Name', profile.emergencyContactName!),
+            if (profile.emergencyContactPhone != null &&
+                profile.emergencyContactPhone!.isNotEmpty)
+              _buildInfoRow('Phone', profile.emergencyContactPhone!),
+          ],
+          // Account Dates
+          const SizedBox(height: 12),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Account',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 12,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+          _buildInfoRow('Member Since', _formatDate(profile.createdAt)),
+          if (profile.lastLoginAt != null)
+            _buildInfoRow('Last Login', _formatDate(profile.lastLoginAt!)),
         ],
       ],
     );
   }
 
+  /// Build health info item with checkmark
+  Widget _buildHealthInfoItem(String label, bool value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Icon(
+            value ? Icons.check_circle : Icons.cancel,
+            size: 20,
+            color: value ? AppColors.success : Colors.grey[400],
+          ),
+          const SizedBox(width: 12),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 14,
+              color: value ? AppColors.textPrimary : AppColors.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Format date for display
+  String _formatDate(DateTime date) {
+    return '${date.day}/${date.month}/${date.year}';
+  }
+
   Widget _buildDeviceSection(BuildContext context, SensorProvider provider) {
     return _buildSection(
-      title: 'Device',
+      title: 'Device & Sensor',
       icon: Icons.bluetooth,
       children: [
         ListTile(
@@ -110,40 +214,54 @@ class SettingsScreen extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
             ),
             child: Icon(
-              provider.isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
+              provider.isConnected
+                  ? Icons.bluetooth_connected
+                  : Icons.bluetooth,
               color: provider.isConnected ? AppColors.success : Colors.grey,
             ),
           ),
           title: Text(
             provider.isConnected ? provider.deviceName : 'No device connected',
             style: const TextStyle(fontWeight: FontWeight.w500),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
           ),
           subtitle: Text(
             provider.isConnected
                 ? 'Battery: ${provider.batteryLevel}%'
                 : 'Tap to connect',
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
           ),
-          trailing: provider.isConnected
-              ? TextButton(
-                  onPressed: () => provider.disconnect(),
-                  child: const Text('Disconnect'),
-                )
-              : ElevatedButton(
-                  onPressed: () => provider.connect(),
-                  child: const Text('Connect'),
-                ),
+          trailing: SizedBox(
+            width: 120,
+            child: provider.isConnected
+                ? TextButton(
+                    onPressed: () => provider.disconnect(),
+                    child: const Text('Disconnect'),
+                  )
+                : ElevatedButton(
+                    onPressed: () {
+                      // Navigate to device scan screen for Bluetooth connection
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => const ClassicBtScanScreen(),
+                        ),
+                      );
+                    },
+                    child: const Text('Connect'),
+                  ),
+          ),
         ),
-        if (provider.isConnected) ...[
-          const Divider(),
-          SwitchListTile(
-            title: const Text('Auto-reconnect'),
-            subtitle: const Text('Reconnect when device is in range'),
-            value: true, // TODO: Implement auto-reconnect setting
-            onChanged: (value) {
-              // TODO: Implement
-            },
-          ),
-        ],
+        const Divider(),
+        SwitchListTile(
+          title: const Text('Auto-reconnect'),
+          subtitle: const Text('Reconnect when device is in range'),
+          value: true, // TODO: Implement auto-reconnect setting
+          onChanged: (value) {
+            // TODO: Implement
+          },
+        ),
       ],
     );
   }
@@ -157,20 +275,24 @@ class SettingsScreen extends StatelessWidget {
       children: [
         ListTile(
           title: const Text('Temperature Unit'),
-          subtitle: Text(settings.temperatureUnit == TemperatureUnit.celsius
-              ? 'Celsius (°C)'
-              : 'Fahrenheit (°F)'),
+          subtitle: Text(
+            settings.temperatureUnit == TemperatureUnit.celsius
+                ? 'Celsius (°C)'
+                : 'Fahrenheit (°F)',
+          ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _showTemperatureUnitDialog(context, provider, settings),
         ),
         const Divider(),
         ListTile(
           title: const Text('Theme'),
-          subtitle: Text(settings.themeMode == ThemeMode.system
-              ? 'System default'
-              : settings.themeMode == ThemeMode.dark
-                  ? 'Dark'
-                  : 'Light'),
+          subtitle: Text(
+            settings.themeMode == ThemeMode.system
+                ? 'System default'
+                : settings.themeMode == ThemeMode.dark
+                ? 'Dark'
+                : 'Light',
+          ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _showThemeDialog(context, provider, settings),
         ),
@@ -185,7 +307,10 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildNotificationsSection(BuildContext context, UserProvider provider) {
+  Widget _buildNotificationsSection(
+    BuildContext context,
+    UserProvider provider,
+  ) {
     final settings = provider.userProfile?.settings ?? const UserSettings();
 
     return _buildSection(
@@ -255,9 +380,7 @@ class SettingsScreen extends StatelessWidget {
           subtitle: const Text('Peripheral Arterial Disease'),
           value: healthInfo.hasPAD,
           onChanged: (value) {
-            provider.updateHealthInfo(
-              healthInfo.copyWith(hasPAD: value),
-            );
+            provider.updateHealthInfo(healthInfo.copyWith(hasPAD: value));
           },
         ),
         const Divider(),
@@ -403,14 +526,8 @@ class SettingsScreen extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            label,
-            style: TextStyle(color: Colors.grey[600]),
-          ),
-          Text(
-            value,
-            style: const TextStyle(fontWeight: FontWeight.w500),
-          ),
+          Text(label, style: TextStyle(color: Colors.grey[600])),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w500)),
         ],
       ),
     );
@@ -422,50 +539,169 @@ class SettingsScreen extends StatelessWidget {
     final ageController = TextEditingController(
       text: profile?.age?.toString() ?? '',
     );
+    final phoneController = TextEditingController(text: profile?.phone ?? '');
+    final emergencyNameController = TextEditingController(
+      text: profile?.emergencyContactName ?? '',
+    );
+    final emergencyPhoneController = TextEditingController(
+      text: profile?.emergencyContactPhone ?? '',
+    );
+    final diabetesYearsController = TextEditingController(
+      text: profile?.diabetesYears?.toString() ?? '',
+    );
+
+    DiabetesType? selectedDiabetesType = profile?.diabetesType;
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit Profile'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: 'Name',
-                border: OutlineInputBorder(),
-              ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Edit Profile'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Full Name',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: ageController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Age',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: TextField(
+                        controller: diabetesYearsController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Years w/ Diabetes',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<DiabetesType>(
+                  value: selectedDiabetesType,
+                  decoration: const InputDecoration(
+                    labelText: 'Diabetes Type',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: DiabetesType.values.map((type) {
+                    return DropdownMenuItem(
+                      value: type,
+                      child: Text(type.displayName),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    setState(() {
+                      selectedDiabetesType = value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: phoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Phone Number',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.phone),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const Divider(),
+                const SizedBox(height: 8),
+                const Text(
+                  'Emergency Contact',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: emergencyNameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Contact Name',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: emergencyPhoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Contact Phone',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: ageController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Age',
-                border: OutlineInputBorder(),
-              ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (profile == null || profile.id.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Error: User profile not found'),
+                    ),
+                  );
+                  return;
+                }
+
+                try {
+                  await provider.updateProfile(
+                    name: nameController.text.trim().isEmpty
+                        ? profile.name
+                        : nameController.text.trim(),
+                    age: int.tryParse(ageController.text.trim()),
+                    phone: phoneController.text.trim(),
+                    diabetesType: selectedDiabetesType,
+                    diabetesYears: int.tryParse(
+                      diabetesYearsController.text.trim(),
+                    ),
+                    emergencyContactName: emergencyNameController.text.trim(),
+                    emergencyContactPhone: emergencyPhoneController.text.trim(),
+                  );
+
+                  if (!context.mounted) return;
+                  Navigator.pop(context);
+
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Profile updated and saved to Firestore'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                } catch (e) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error saving profile: $e')),
+                  );
+                }
+              },
+              child: const Text('Save Changes'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (profile != null) {
-                provider.updateProfile(
-                  name: nameController.text,
-                  age: int.tryParse(ageController.text),
-                );
-              }
-              Navigator.pop(context);
-            },
-            child: const Text('Save'),
-          ),
-        ],
       ),
     );
   }
@@ -528,9 +764,7 @@ class SettingsScreen extends StatelessWidget {
               groupValue: settings.themeMode,
               onChanged: (value) {
                 if (value != null) {
-                  provider.updateSettings(
-                    settings.copyWith(themeMode: value),
-                  );
+                  provider.updateSettings(settings.copyWith(themeMode: value));
                 }
                 Navigator.pop(context);
               },
@@ -541,9 +775,7 @@ class SettingsScreen extends StatelessWidget {
               groupValue: settings.themeMode,
               onChanged: (value) {
                 if (value != null) {
-                  provider.updateSettings(
-                    settings.copyWith(themeMode: value),
-                  );
+                  provider.updateSettings(settings.copyWith(themeMode: value));
                 }
                 Navigator.pop(context);
               },
@@ -554,9 +786,7 @@ class SettingsScreen extends StatelessWidget {
               groupValue: settings.themeMode,
               onChanged: (value) {
                 if (value != null) {
-                  provider.updateSettings(
-                    settings.copyWith(themeMode: value),
-                  );
+                  provider.updateSettings(settings.copyWith(themeMode: value));
                 }
                 Navigator.pop(context);
               },
@@ -612,14 +842,11 @@ class SettingsScreen extends StatelessWidget {
           ElevatedButton(
             onPressed: () {
               provider.deleteProfile();
-              Navigator.of(context).pushNamedAndRemoveUntil(
-                '/welcome',
-                (route) => false,
-              );
+              Navigator.of(
+                context,
+              ).pushNamedAndRemoveUntil('/welcome', (route) => false);
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.error,
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
             child: const Text('Logout'),
           ),
         ],
